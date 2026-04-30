@@ -1,0 +1,14 @@
+{
+    "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+    "clip_model": "ViT-L-14",
+    "clip_pretrained": "openai",
+    "wikiart_dir": "/transfer/wikidatasets/steubk/wikiart/version",
+    "embeddings_path": "/transfer/embeddings/wikiart_clip.pt",
+    "training_output_dir": "/transfer/outputs/models",
+    "generation_output_dir": "/transfer/outputs/generated",
+    "retrieval_top_k": 50,
+    "retrieval_min_similarity": 0.5,
+    "image_weight": 0.7,
+    "resolution": 1024,
+    "trigger_word": "sty1e"
+}
