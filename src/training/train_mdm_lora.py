@@ -69,7 +69,7 @@ class CLIPTextEncoder:
 def parse_args():
     p = argparse.ArgumentParser(description="MDM LoRA Fine-tuning")
     # Data
-    p.add_argument("--humanml3d_dir", type=str, default="/transfer/datasets/HumanML3D")
+    p.add_argument("--humanml3d_dir", type=str, default="/transfer/loradataset/humanml3d")
     p.add_argument("--style_data_dir", type=str, default=None, help="Style dataset for LoRA tuning")
     p.add_argument("--pretrained_path", type=str, default="/transfer/pretrained/mdm_humanml3d.pt",
                    help="Path to pretrained MDM weights")

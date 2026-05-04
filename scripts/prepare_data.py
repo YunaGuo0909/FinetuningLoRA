@@ -26,10 +26,10 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 TRANSFER_ROOT = Path("/transfer")
-DATASETS_DIR = TRANSFER_ROOT / "datasets"
+DATASETS_DIR = TRANSFER_ROOT / "loradataset"
 PRETRAINED_DIR = TRANSFER_ROOT / "pretrained"
 
-HUMANML3D_DIR = DATASETS_DIR / "HumanML3D"
+HUMANML3D_DIR = DATASETS_DIR / "humanml3d"
 STYLE100_DIR = DATASETS_DIR / "100STYLE"
 MDM_WEIGHTS_PATH = PRETRAINED_DIR / "mdm_humanml3d.pt"
 

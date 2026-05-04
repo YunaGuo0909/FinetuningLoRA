@@ -2,11 +2,11 @@
     "project": "motion-style-lora",
 
     "data": {
-        "humanml3d_dir": "/transfer/datasets/HumanML3D",
-        "style_data_dir": "/transfer/datasets/100STYLE",
-        "style_converted_dir": "/transfer/datasets/style_converted",
-        "mean_path": "/transfer/datasets/HumanML3D/Mean.npy",
-        "std_path": "/transfer/datasets/HumanML3D/Std.npy",
+        "humanml3d_dir": "/transfer/loradataset/humanml3d",
+        "style_data_dir": "/transfer/loradataset/100STYLE",
+        "style_converted_dir": "/transfer/loradataset/style_converted",
+        "mean_path": "/transfer/loradataset/humanml3d/Mean.npy",
+        "std_path": "/transfer/loradataset/humanml3d/Std.npy",
         "njoints": 22,
         "nfeats": 263,
         "max_motion_length": 196,

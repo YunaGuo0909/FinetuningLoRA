@@ -141,9 +141,9 @@ def convert_styles(input_dir: str, output_dir: str, styles: list[str], force: bo
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert 100STYLE BVH to HumanML3D format")
-    parser.add_argument("--input", type=str, default="/transfer/datasets/100STYLE",
+    parser.add_argument("--input", type=str, default="/transfer/loradataset/100STYLE",
                         help="Path to 100STYLE dataset")
-    parser.add_argument("--output", type=str, default="/transfer/datasets/style_converted",
+    parser.add_argument("--output", type=str, default="/transfer/loradataset/style_converted",
                         help="Output directory for converted data")
     parser.add_argument("--styles", type=str, help="Comma-separated style names")
     parser.add_argument("--all", action="store_true", help="Convert all styles")
