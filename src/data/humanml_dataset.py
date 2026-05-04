@@ -136,9 +136,6 @@ class StyleMotionDataset(Dataset):
         self.data_dir = Path(data_dir)
         self.max_motion_length = max_motion_length
         self.nfeats = nfeats
-        self.mean = mean
-        self.std = std.copy()
-        self.std[self.std < 1e-5] = 1.0
 
         metadata_path = self.data_dir / "metadata.jsonl"
         self.entries = []
@@ -147,7 +144,19 @@ class StyleMotionDataset(Dataset):
                 entry = json.loads(line)
                 self.entries.append(entry)
 
+        # Compute mean/std from the style data itself (BVH-converted features
+        # have different value ranges than HumanML3D processed features)
+        all_data = []
+        for entry in self.entries:
+            m = np.load(self.data_dir / "motions" / entry["file"])
+            all_data.append(m)
+        all_data = np.concatenate(all_data, axis=0)
+        self.mean = all_data.mean(axis=0)
+        self.std = all_data.std(axis=0)
+        self.std[self.std < 1e-5] = 1.0
+
         print(f"StyleMotionDataset: {len(self.entries)} motions from {data_dir}")
+        print(f"  Computed own stats: mean=[{self.mean.min():.2f}, {self.mean.max():.2f}], std=[{self.std.min():.4f}, {self.std.max():.2f}]")
 
     def __len__(self):
         return len(self.entries)
