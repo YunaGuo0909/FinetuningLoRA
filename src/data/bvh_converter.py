@@ -299,7 +299,10 @@ def compute_humanml3d_features(positions_seq: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 # Common BVH-to-HumanML3D joint name mapping
+# Mapping: BVH joint name -> HumanML3D joint name
+# Multiple common BVH naming conventions are supported.
 DEFAULT_JOINT_MAP = {
+    # --- Mixamo / CMU style ---
     "Hips": "Pelvis",
     "LeftUpLeg": "L_Hip", "RightUpLeg": "R_Hip",
     "Spine": "Spine1",
@@ -314,6 +317,19 @@ DEFAULT_JOINT_MAP = {
     "LeftArm": "L_Shoulder", "RightArm": "R_Shoulder",
     "LeftForeArm": "L_Elbow", "RightForeArm": "R_Elbow",
     "LeftHand": "L_Wrist", "RightHand": "R_Wrist",
+    # --- 100STYLE skeleton ---
+    "Chest": "Spine1",
+    "Chest2": "Spine2",
+    "Chest3": "Spine3",
+    "Chest4": "Spine3",       # 100STYLE has 4 spine joints, we merge 3&4
+    "LeftHip": "L_Hip", "RightHip": "R_Hip",
+    "LeftKnee": "L_Knee", "RightKnee": "R_Knee",
+    "LeftAnkle": "L_Ankle", "RightAnkle": "R_Ankle",
+    "LeftToe": "L_Foot", "RightToe": "R_Foot",
+    "LeftCollar": "L_Collar", "RightCollar": "R_Collar",
+    "LeftShoulder": "L_Shoulder", "RightShoulder": "R_Shoulder",
+    "LeftElbow": "L_Elbow", "RightElbow": "R_Elbow",
+    "LeftWrist": "L_Wrist", "RightWrist": "R_Wrist",
 }
 
 
