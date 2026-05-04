@@ -203,7 +203,8 @@ def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
     print(f"Loaded official MDM from {ckpt_path}")
     print(f"  Arch: {args.arch}, Layers: {args.layers}, Latent: {args.latent_dim}")
 
-    return model.to(device)
+    model.to(device)
+    return model
 
 
 def replace_attention_layers(model: nn.Module) -> nn.Module:
