@@ -71,7 +71,8 @@ def parse_args():
     # Data
     p.add_argument("--humanml3d_dir", type=str, default="/transfer/loradataset/humanml3d")
     p.add_argument("--style_data_dir", type=str, default=None, help="Style dataset for LoRA tuning")
-    p.add_argument("--pretrained_path", type=str, default="/transfer/pretrained/mdm_humanml3d.pt",
+    p.add_argument("--pretrained_path", type=str,
+                   default="/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512/model000475000.pt",
                    help="Path to pretrained MDM weights")
 
     # Mode

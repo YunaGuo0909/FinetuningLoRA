@@ -27,11 +27,11 @@ from pathlib import Path
 
 TRANSFER_ROOT = Path("/transfer")
 DATASETS_DIR = TRANSFER_ROOT / "loradataset"
-PRETRAINED_DIR = TRANSFER_ROOT / "pretrained"
+PRETRAINED_DIR = TRANSFER_ROOT / "lorapretrain" / "humanml_trans_enc_512" / "humanml_trans_enc_512"
 
 HUMANML3D_DIR = DATASETS_DIR / "humanml3d"
 STYLE100_DIR = DATASETS_DIR / "100STYLE"
-MDM_WEIGHTS_PATH = PRETRAINED_DIR / "mdm_humanml3d.pt"
+MDM_WEIGHTS_PATH = PRETRAINED_DIR / "model000475000.pt"
 
 # HumanML3D repo (contains processed data links)
 HUMANML3D_REPO = "https://github.com/EricGuo5513/HumanML3D.git"

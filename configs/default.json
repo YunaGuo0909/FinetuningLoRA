@@ -52,7 +52,7 @@
         "mixed_precision": "fp16"
     },
 
-    "pretrained_weights": "/transfer/pretrained/mdm_humanml3d.pt",
+    "pretrained_weights": "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512/model000475000.pt",
 
     "output": {
         "model_dir": "/transfer/outputs/models",
