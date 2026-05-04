@@ -8,6 +8,8 @@ Pretrained weights from the official MDM repo can be loaded via
 `load_pretrained_mdm()` which splits the fused in_proj_weight automatically.
 """
 
+from __future__ import annotations
+
 import math
 import torch
 import torch.nn as nn
@@ -34,15 +36,17 @@ class SinusoidalPosEmb(nn.Module):
 class TimestepEmbedder(nn.Module):
     def __init__(self, latent_dim: int):
         super().__init__()
+        self.sinusoidal = SinusoidalPosEmb(latent_dim)
+        # Matches official MDM: Linear -> SiLU -> Linear
         self.time_embed = nn.Sequential(
-            SinusoidalPosEmb(latent_dim),
             nn.Linear(latent_dim, latent_dim),
             nn.SiLU(),
             nn.Linear(latent_dim, latent_dim),
         )
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        return self.time_embed(timesteps)
+        emb = self.sinusoidal(timesteps)
+        return self.time_embed(emb)
 
 
 class MultiheadSelfAttention(nn.Module):
@@ -70,8 +74,7 @@ class MultiheadSelfAttention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * scale
 
         if key_padding_mask is not None:
-            # key_padding_mask: (B, T), True = ignore
-            mask = key_padding_mask.unsqueeze(1).unsqueeze(2)  # (B,1,1,T)
+            mask = key_padding_mask.unsqueeze(1).unsqueeze(2)
             attn = attn.masked_fill(mask, float("-inf"))
 
         attn = attn.softmax(dim=-1)
@@ -82,6 +85,8 @@ class MultiheadSelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
+    """Post-norm Transformer block (matches official MDM / PyTorch default)."""
+
     def __init__(self, d_model: int, nhead: int, dim_ff: int, dropout: float = 0.1):
         super().__init__()
         self.self_attn = MultiheadSelfAttention(d_model, nhead, dropout)
@@ -89,19 +94,17 @@ class TransformerBlock(nn.Module):
         self.linear2 = nn.Linear(dim_ff, d_model)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
-        # Pre-norm style (matches official MDM behavior after conversion)
-        h = self.norm1(x)
-        h = self.self_attn(h, key_padding_mask)
-        x = x + self.dropout1(h)
+        # Post-norm (matches nn.TransformerEncoderLayer default)
+        h = self.self_attn(x, key_padding_mask)
+        x = self.norm1(x + self.dropout(h))
 
-        h = self.norm2(x)
-        h = self.linear2(self.dropout2(F.gelu(self.linear1(h))))
-        x = x + self.dropout3(h)
+        h = self.linear2(self.dropout1(F.gelu(self.linear1(x))))
+        x = self.norm2(x + self.dropout2(h))
         return x
 
 
@@ -133,20 +136,12 @@ class MDM(nn.Module):
         self.latent_dim = latent_dim
         self.cond_mode = cond_mode
 
-        # --- Input / output projections (2-layer MLP, matching official MDM) ---
-        self.input_process = nn.Sequential(
-            nn.Linear(nfeats, latent_dim),
-            nn.SiLU(),
-            nn.Linear(latent_dim, latent_dim),
-        )
-        self.output_process = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim),
-            nn.SiLU(),
-            nn.Linear(latent_dim, nfeats),
-        )
+        # --- Input / output projections (single Linear, matching official MDM) ---
+        self.input_process = nn.Linear(nfeats, latent_dim)
+        self.output_process = nn.Linear(latent_dim, nfeats)
 
         # --- Positional encoding (learnable) ---
-        self.pos_embedding = nn.Embedding(max_seq_len + 2, latent_dim)  # +2 for cond tokens
+        self.pos_embedding = nn.Embedding(max_seq_len + 2, latent_dim)
 
         # --- Condition embeddings ---
         self.embed_timestep = TimestepEmbedder(latent_dim)
@@ -158,7 +153,6 @@ class MDM(nn.Module):
             TransformerBlock(latent_dim, num_heads, ff_size, dropout)
             for _ in range(num_layers)
         ])
-        self.final_norm = nn.LayerNorm(latent_dim)
 
     def forward(
         self,
@@ -181,18 +175,13 @@ class MDM(nn.Module):
         # Project motion to latent dim
         h = self.input_process(x)  # (B, T, D)
 
-        # Build condition tokens
-        cond_tokens = []
-        t_emb = self.embed_timestep(timesteps)  # (B, D)
-        cond_tokens.append(t_emb.unsqueeze(1))
-
+        # Condition token: timestep + text (added together like official MDM)
+        cond = self.embed_timestep(timesteps)  # (B, D)
         if text_emb is not None and hasattr(self, "embed_text"):
-            txt = self.embed_text(text_emb)  # (B, D)
-            cond_tokens.append(txt.unsqueeze(1))
+            cond = cond + self.embed_text(text_emb)  # (B, D)
 
-        n_cond = len(cond_tokens)
-        cond = torch.cat(cond_tokens, dim=1)  # (B, n_cond, D)
-        h = torch.cat([cond, h], dim=1)  # (B, n_cond + T, D)
+        # Prepend single condition token
+        h = torch.cat([cond.unsqueeze(1), h], dim=1)  # (B, 1+T, D)
 
         # Add positional encoding
         seq_len = h.shape[1]
@@ -201,7 +190,7 @@ class MDM(nn.Module):
 
         # Build key_padding_mask for transformer (True = ignore)
         if mask is not None:
-            cond_mask = torch.zeros(B, n_cond, dtype=torch.bool, device=x.device)
+            cond_mask = torch.zeros(B, 1, dtype=torch.bool, device=x.device)
             key_padding_mask = torch.cat([cond_mask, mask], dim=1)
         else:
             key_padding_mask = None
@@ -210,10 +199,8 @@ class MDM(nn.Module):
         for block in self.transformer:
             h = block(h, key_padding_mask)
 
-        h = self.final_norm(h)
-
-        # Strip condition tokens, project back
-        h = h[:, n_cond:]  # (B, T, D)
+        # Strip condition token, project back
+        h = h[:, 1:]  # (B, T, D)
         output = self.output_process(h)  # (B, T, nfeats)
         return output
 
@@ -225,34 +212,42 @@ class MDM(nn.Module):
 def load_pretrained_mdm(model: MDM, ckpt_path: str, strict: bool = False) -> MDM:
     """Load official MDM checkpoint, remapping fused QKV weights to separate layers.
 
-    Official MDM uses nn.TransformerEncoder with fused in_proj_weight.
-    Our model uses separate to_q / to_k / to_v linear layers.
+    Official MDM structure:
+        input_process.poseEmbedding.{weight,bias}     -> single Linear
+        output_process.poseFinal.{weight,bias}         -> single Linear
+        embed_timestep.time_embed.{0,2}.{weight,bias}  -> Linear,SiLU,Linear
+        embed_text.{weight,bias}                        -> Linear
+        seqTransEncoder.layers.N.self_attn.in_proj_{weight,bias}  -> fused QKV
+        seqTransEncoder.layers.N.self_attn.out_proj.{weight,bias}
+        seqTransEncoder.layers.N.{linear1,linear2,norm1,norm2}.{weight,bias}
     """
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    state = ckpt if isinstance(ckpt, dict) and "model_state_dict" not in ckpt else ckpt.get("model_state_dict", ckpt)
+    # Handle different checkpoint formats
+    if isinstance(ckpt, dict):
+        state = ckpt.get("model_state_dict", ckpt.get("state_dict", ckpt))
+    else:
+        state = ckpt
 
     new_state = {}
     d = model.latent_dim
 
     for key, val in state.items():
-        # --- Input process ---
-        if key.startswith("input_process.poseEmbedding."):
-            idx = key.split(".")[-2]  # 0 or 1
-            suffix = key.split(".")[-1]  # weight or bias
-            new_key = f"input_process.{int(idx) * 2}.{suffix}"
-            new_state[new_key] = val
+        # --- Input process: single Linear ---
+        if key == "input_process.poseEmbedding.weight":
+            new_state["input_process.weight"] = val
+        elif key == "input_process.poseEmbedding.bias":
+            new_state["input_process.bias"] = val
 
-        # --- Output process ---
-        elif key.startswith("output_process.poseFinal."):
-            idx = key.split(".")[-2]
-            suffix = key.split(".")[-1]
-            new_key = f"output_process.{int(idx) * 2}.{suffix}"
-            new_state[new_key] = val
+        # --- Output process: single Linear ---
+        elif key == "output_process.poseFinal.weight":
+            new_state["output_process.weight"] = val
+        elif key == "output_process.poseFinal.bias":
+            new_state["output_process.bias"] = val
 
         # --- Timestep embedder ---
+        # Official: time_embed.{0,2}.* -> ours: time_embed.{0,2}.*  (same indices)
         elif key.startswith("embed_timestep.time_embed."):
-            new_key = key.replace("embed_timestep.time_embed.", "embed_timestep.time_embed.")
-            new_state[new_key] = val
+            new_state[key] = val
 
         # --- Text projection ---
         elif key.startswith("embed_text."):
@@ -260,8 +255,9 @@ def load_pretrained_mdm(model: MDM, ckpt_path: str, strict: bool = False) -> MDM
 
         # --- Transformer layers ---
         elif "seqTransEncoder.layers." in key:
-            layer_idx = key.split(".")[2]
-            rest = ".".join(key.split(".")[3:])
+            parts = key.split(".")
+            layer_idx = parts[2]
+            rest = ".".join(parts[3:])
 
             # Split fused attention weights
             if rest == "self_attn.in_proj_weight":
@@ -276,15 +272,13 @@ def load_pretrained_mdm(model: MDM, ckpt_path: str, strict: bool = False) -> MDM
                 suffix = rest.split(".")[-1]
                 new_state[f"transformer.{layer_idx}.self_attn.to_out.{suffix}"] = val
             else:
-                # linear1, linear2, norm1, norm2
+                # linear1, linear2, norm1, norm2 — same names
                 new_state[f"transformer.{layer_idx}.{rest}"] = val
 
-        # Skip positional encoding buffers (we use learned embeddings instead)
+        # Skip: sequence_pos_encoder buffers (we use learned embeddings)
 
     missing, unexpected = model.load_state_dict(new_state, strict=strict)
-    if missing:
-        print(f"Missing keys (expected for pos_embedding etc.): {len(missing)}")
-    if unexpected:
-        print(f"Unexpected keys: {unexpected}")
+    loaded = len(new_state) - len(unexpected)
     print(f"Loaded pretrained MDM from {ckpt_path}")
+    print(f"  Mapped {loaded} params, {len(missing)} missing (pos_embedding etc.), {len(unexpected)} unexpected")
     return model
