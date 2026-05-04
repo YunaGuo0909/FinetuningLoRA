@@ -52,12 +52,14 @@ def motion_features_to_positions(motion: np.ndarray) -> np.ndarray:
 
 def plot_skeleton_frame(
     ax, positions: np.ndarray, title: str = "", alpha: float = 1.0,
+    xlim=None, ylim=None, zlim=None,
 ):
     """Plot a single skeleton frame on a 3D axis.
 
     Args:
         ax: matplotlib 3D axis
         positions: (22, 3) joint positions
+        xlim, ylim, zlim: axis limits (auto-computed if None)
     """
     ax.cla()
 
@@ -74,15 +76,41 @@ def plot_skeleton_frame(
     ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2],
                c="black", s=15, depthshade=True, alpha=alpha)
 
-    # Axis settings
-    ax.set_xlim(-1.5, 1.5)
-    ax.set_ylim(0, 2.0)
-    ax.set_zlim(-1.5, 1.5)
+    # Axis settings - auto-scale if not provided
+    if xlim is not None:
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_zlim(zlim)
+    else:
+        center = positions.mean(axis=0)
+        max_range = max(positions.max(axis=0) - positions.min(axis=0)) / 2 + 0.2
+        max_range = max(max_range, 0.5)  # minimum range
+        ax.set_xlim(center[0] - max_range, center[0] + max_range)
+        ax.set_ylim(center[1] - max_range, center[1] + max_range)
+        ax.set_zlim(center[2] - max_range, center[2] + max_range)
+
     ax.set_xlabel("X")
     ax.set_ylabel("Y (up)")
     ax.set_zlabel("Z")
     ax.set_title(title)
     ax.view_init(elev=15, azim=45)
+
+
+def _compute_axis_limits(positions: np.ndarray, padding: float = 0.3):
+    """Compute fixed axis limits from all frames to prevent jittering.
+
+    Args:
+        positions: (T, 22, 3) joint positions across all frames
+    """
+    all_min = positions.reshape(-1, 3).min(axis=0)
+    all_max = positions.reshape(-1, 3).max(axis=0)
+    center = (all_min + all_max) / 2
+    max_range = (all_max - all_min).max() / 2 + padding
+    max_range = max(max_range, 0.5)
+    xlim = (center[0] - max_range, center[0] + max_range)
+    ylim = (center[1] - max_range, center[1] + max_range)
+    zlim = (center[2] - max_range, center[2] + max_range)
+    return xlim, ylim, zlim
 
 
 def render_motion_animation(
@@ -103,9 +131,11 @@ def render_motion_animation(
     """
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection="3d")
+    xlim, ylim, zlim = _compute_axis_limits(positions)
 
     def update(frame):
-        plot_skeleton_frame(ax, positions[frame], title=f"{title} (frame {frame})")
+        plot_skeleton_frame(ax, positions[frame], title=f"{title} (frame {frame})",
+                            xlim=xlim, ylim=ylim, zlim=zlim)
 
     T = positions.shape[0]
     anim = FuncAnimation(fig, update, frames=T, interval=1000 / fps, repeat=False)
@@ -136,10 +166,15 @@ def render_comparison(
     ax2 = fig.add_subplot(122, projection="3d")
 
     T = min(base_positions.shape[0], lora_positions.shape[0])
+    # Use shared axis limits so comparison is fair
+    combined = np.concatenate([base_positions[:T], lora_positions[:T]], axis=0)
+    xlim, ylim, zlim = _compute_axis_limits(combined)
 
     def update(frame):
-        plot_skeleton_frame(ax1, base_positions[frame], title="Base Model")
-        plot_skeleton_frame(ax2, lora_positions[frame], title="With LoRA")
+        plot_skeleton_frame(ax1, base_positions[frame], title="Base Model",
+                            xlim=xlim, ylim=ylim, zlim=zlim)
+        plot_skeleton_frame(ax2, lora_positions[frame], title="With LoRA",
+                            xlim=xlim, ylim=ylim, zlim=zlim)
 
     anim = FuncAnimation(fig, update, frames=T, interval=1000 / fps, repeat=False)
 
