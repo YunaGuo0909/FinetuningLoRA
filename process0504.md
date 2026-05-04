@@ -191,11 +191,39 @@ HuggingFace cache defaults to `~/.cache/huggingface`.
 
 **Solution**: Changed to `/data/` (root-only match).
 
+### First Training Run: loss=nan
+
+Training ran to completion (2000 steps, ~6 min) but loss was `nan` throughout.
+
+**Diagnosis**: Wrote `scripts/diagnose_data.py` to compare data ranges:
+| Data | Raw range | After normalization (HumanML3D mean/std) |
+|------|-----------|------------------------------------------|
+| HumanML3D | [-1.0, 1.75] | [-9, +15] |
+| Style (BVH-converted) | [-6.26, 6.27] | [-488, +484] |
+
+The BVH-converted style data has completely different value distributions from HumanML3D's processed features. Using HumanML3D's Mean/Std to normalize the style data produces values 50x too large, causing numerical overflow in the diffusion loss.
+
+**Root Cause**: Our BVH converter (`bvh_converter.py`) computes 263-dim features from joint positions, but the computation pipeline (especially rotation representations, velocity calculations, unit scaling) differs from HumanML3D's original processing scripts. The features are structurally similar but numerically incompatible.
+
+**Solution**: Modified `StyleMotionDataset` to compute its own mean/std from the style data at initialization, rather than using HumanML3D's stats. This ensures the normalized data falls in a reasonable range regardless of the raw feature scale.
+
+```python
+# Before: used HumanML3D stats (mismatched)
+self.mean = mean  # from HumanML3D Mean.npy
+self.std = std    # from HumanML3D Std.npy
+
+# After: compute from style data itself
+all_data = np.concatenate([np.load(f) for f in motion_files], axis=0)
+self.mean = all_data.mean(axis=0)
+self.std = all_data.std(axis=0)
+```
+
 ### Current Status
-- MDM weights load successfully (138 params mapped)
+- MDM weights load successfully (138 params mapped, 1 missing for pos_embedding)
 - LoRA applied: 524,288 trainable params (2.83% of total)
-- CLIP text encoder downloading to `/transfer/hf_cache/`
-- **Next**: Re-run training command with correct cache paths
+- CLIP ViT-B/32 loaded from HuggingFace (cached on `/transfer/hf_cache/`)
+- First training run completed but with nan loss (data normalization mismatch)
+- **Next**: Re-run training with self-computed normalization (style_lora_v2)
 
 ---
 
@@ -203,7 +231,7 @@ HuggingFace cache defaults to `~/.cache/huggingface`.
 
 | Task | Status | Est. Time |
 |------|--------|-----------|
-| Complete MDM + LoRA training | In progress | 1-2 hours |
+| Re-run MDM + LoRA training (v2) | In progress | ~6 min |
 | Generate + evaluate results | Not started | 1 hour |
 | MLD + LoRA training (comparison) | Not started | 2 days |
 | Visualization outputs | Not started | 1 hour |
