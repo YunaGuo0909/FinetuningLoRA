@@ -123,8 +123,6 @@ def main():
     print("Generating with BASE model (official MDM)...")
     print("=" * 50)
     base_model = load_official_mdm(CHECKPOINT_DIR, device=device)
-    # Replace attention for consistent API but don't add LoRA
-    base_model = replace_attention_layers(base_model)
     base_model.eval()
 
     torch.manual_seed(SEED)

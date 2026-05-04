@@ -212,12 +212,12 @@ def replace_attention_layers(model: nn.Module) -> nn.Module:
     This enables PEFT LoRA to target to_q, to_k, to_v, to_out.
     """
     count = 0
-    # The official MDM uses seqTransEncoder which contains TransformerEncoderLayers
-    if hasattr(model, "seqTransEncoder"):
-        for layer in model.seqTransEncoder.layers:
-            if hasattr(layer, "self_attn") and isinstance(layer.self_attn, nn.MultiheadAttention):
-                new_attn = SplitQKVAttention.from_multihead_attention(layer.self_attn)
-                layer.self_attn = new_attn
+    # Walk all submodules and replace any nn.MultiheadAttention
+    for name, module in model.named_modules():
+        for attr_name, child in list(module.named_children()):
+            if isinstance(child, nn.MultiheadAttention):
+                new_attn = SplitQKVAttention.from_multihead_attention(child)
+                setattr(module, attr_name, new_attn)
                 count += 1
 
     print(f"Replaced {count} attention layers with SplitQKVAttention")
