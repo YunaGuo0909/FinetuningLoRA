@@ -147,10 +147,35 @@ def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
 
     # Import official MDM
     from model.mdm import MDM
-    from utils.model_util import get_model_args
 
-    # Build model args
-    model_args = get_model_args(args, args_dict.get("data", None))
+    # Build model args directly from args.json (avoid needing a data object)
+    njoints = 263 if args.dataset == "humanml" else 251  # humanml=263, kit=251
+    model_args = {
+        "modeltype": "",
+        "njoints": njoints,
+        "nfeats": 1,
+        "num_actions": 1,
+        "translation": True,
+        "pose_rep": "rot6d",
+        "glob": True,
+        "glob_rot": True,
+        "latent_dim": args.latent_dim,
+        "ff_size": 1024,
+        "num_layers": args.layers,
+        "num_heads": args.num_heads,
+        "dropout": args.dropout,
+        "activation": "gelu",
+        "data_rep": args.data_rep,
+        "dataset": args.dataset,
+        "clip_dim": 512,
+        "arch": args.arch,
+        "emb_trans_dec": args.emb_trans_dec,
+        "clip_version": args_dict.get("clip_version", "ViT-B/32"),
+        "cond_mode": args.cond_mode,
+        "cond_mask_prob": args.cond_mask_prob,
+        "action_emb": args.action_emb,
+        "legacy": args.legacy,
+    }
 
     # Create model
     model = MDM(**model_args)
