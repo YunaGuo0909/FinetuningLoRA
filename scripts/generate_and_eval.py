@@ -28,7 +28,7 @@ PRETRAINED_PATH = "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_en
 LORA_PATH = "/transfer/outputs/models/style_lora_v2/final"
 STYLE_DATA_DIR = "/transfer/loradataset/style_converted"
 HML3D_DIR = "/transfer/loradataset/humanml3d"
-OUTPUT_DIR = "/transfer/outputs/eval/style_lora_v2"
+OUTPUT_DIR = "/transfer/loraoutputs/eval/style_lora_v2"
 
 PROMPTS = [
     "a person walking like a zombie",
@@ -87,12 +87,23 @@ def generate(model, diffusion, clip_encoder, prompts, device):
     return np.concatenate(all_motions, axis=0)
 
 
+def denormalize_for_viz(motions, mean, std):
+    """Denormalize generated motions back to physical space for visualization."""
+    return motions * std + mean
+
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(SEED)
 
     out_dir = Path(OUTPUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load normalization stats
+    mean = np.load(Path(HML3D_DIR) / "Mean.npy")
+    std = np.load(Path(HML3D_DIR) / "Std.npy")
+    std_safe = std.copy()
+    std_safe[std_safe < 1e-5] = 1.0
 
     print("Loading CLIP encoder...")
     clip_encoder = CLIPTextEncoder(device=device)
@@ -108,6 +119,7 @@ def main():
     base_motions = generate(base_model, diffusion, clip_encoder, PROMPTS, device)
     np.save(out_dir / "base_motions.npy", base_motions)
     print(f"  Generated {base_motions.shape[0]} motions, shape={base_motions.shape}")
+    print(f"  Value range: [{base_motions.min():.3f}, {base_motions.max():.3f}]")
     del base_model
     torch.cuda.empty_cache()
 
@@ -123,6 +135,7 @@ def main():
     lora_motions = generate(lora_model, diffusion, clip_encoder, PROMPTS, device)
     np.save(out_dir / "lora_motions.npy", lora_motions)
     print(f"  Generated {lora_motions.shape[0]} motions, shape={lora_motions.shape}")
+    print(f"  Value range: [{lora_motions.min():.3f}, {lora_motions.max():.3f}]")
     del lora_model
     torch.cuda.empty_cache()
 
@@ -136,7 +149,6 @@ def main():
     motions_dir = Path(STYLE_DATA_DIR) / "motions"
     for f in sorted(motions_dir.glob("*.npy")):
         style_motions.append(np.load(f)[:MOTION_LENGTH])
-    # Pad to same length
     style_padded = []
     for m in style_motions:
         if m.shape[0] < MOTION_LENGTH:
@@ -144,13 +156,9 @@ def main():
         style_padded.append(m[:MOTION_LENGTH])
     reference = np.stack(style_padded)
 
-    mean = np.load(Path(HML3D_DIR) / "Mean.npy")
-    std = np.load(Path(HML3D_DIR) / "Std.npy")
     evaluator = MotionEvaluator(mean, std)
-
     results = evaluator.compare_base_vs_lora(base_motions, lora_motions, reference)
 
-    # Save results
     results_path = out_dir / "evaluation_results.json"
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
@@ -175,13 +183,16 @@ def main():
     viz_dir = out_dir / "viz"
     viz_dir.mkdir(exist_ok=True)
 
+    # Denormalize for visualization
+    base_denorm = denormalize_for_viz(base_motions, mean, std_safe)
+    lora_denorm = denormalize_for_viz(lora_motions, mean, std_safe)
+
     for i, prompt in enumerate(PROMPTS):
         idx = i * NUM_SAMPLES  # first sample for each prompt
         prompt_short = prompt.replace(" ", "_")[:30]
 
-        # Denormalize (approximate - use zeros as mean since these are model outputs)
-        base_pos = motion_features_to_positions(base_motions[idx])
-        lora_pos = motion_features_to_positions(lora_motions[idx])
+        base_pos = motion_features_to_positions(base_denorm[idx])
+        lora_pos = motion_features_to_positions(lora_denorm[idx])
 
         # Individual animations
         render_motion_animation(
@@ -204,11 +215,11 @@ def main():
 
     # Save static frame sequences for the first prompt
     save_frame_sequence(
-        motion_features_to_positions(base_motions[0]),
+        motion_features_to_positions(base_denorm[0]),
         str(viz_dir / "frames_base"), step=10, title="Base",
     )
     save_frame_sequence(
-        motion_features_to_positions(lora_motions[0]),
+        motion_features_to_positions(lora_denorm[0]),
         str(viz_dir / "frames_lora"), step=10, title="LoRA",
     )
 
