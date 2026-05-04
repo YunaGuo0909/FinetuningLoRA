@@ -63,35 +63,35 @@ def plot_skeleton_frame(
     """
     ax.cla()
 
-    # Draw bones
+    # Draw bones (swap Y/Z: data Y=height -> plot Z=vertical)
     for chain, color in zip(KINEMATIC_CHAINS, CHAIN_COLORS):
         for i in range(len(chain) - 1):
             j1, j2 = chain[i], chain[i + 1]
             xs = [positions[j1, 0], positions[j2, 0]]
-            ys = [positions[j1, 1], positions[j2, 1]]
-            zs = [positions[j1, 2], positions[j2, 2]]
+            ys = [positions[j1, 2], positions[j2, 2]]
+            zs = [positions[j1, 1], positions[j2, 1]]
             ax.plot(xs, ys, zs, color=color, linewidth=2, alpha=alpha)
 
-    # Draw joints
-    ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2],
+    # Draw joints (swap Y/Z)
+    ax.scatter(positions[:, 0], positions[:, 2], positions[:, 1],
                c="black", s=15, depthshade=True, alpha=alpha)
 
     # Axis settings - auto-scale if not provided
     if xlim is not None:
         ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-        ax.set_zlim(zlim)
+        ax.set_ylim(zlim)   # data Z -> plot Y
+        ax.set_zlim(ylim)   # data Y (height) -> plot Z
     else:
         center = positions.mean(axis=0)
         max_range = max(positions.max(axis=0) - positions.min(axis=0)) / 2 + 0.2
         max_range = max(max_range, 0.5)  # minimum range
         ax.set_xlim(center[0] - max_range, center[0] + max_range)
-        ax.set_ylim(center[1] - max_range, center[1] + max_range)
-        ax.set_zlim(center[2] - max_range, center[2] + max_range)
+        ax.set_ylim(center[2] - max_range, center[2] + max_range)  # data Z -> plot Y
+        ax.set_zlim(center[1] - max_range, center[1] + max_range)  # data Y -> plot Z
 
     ax.set_xlabel("X")
-    ax.set_ylabel("Y (up)")
-    ax.set_zlabel("Z")
+    ax.set_ylabel("Z")
+    ax.set_zlabel("Y (up)")
     ax.set_title(title)
     ax.view_init(elev=15, azim=45)
 

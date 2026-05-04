@@ -4,6 +4,7 @@ __pycache__/
 *.pt
 *.safetensors
 /data/
+/slides/
 outputs/
 pretrained/
 .vscode/
