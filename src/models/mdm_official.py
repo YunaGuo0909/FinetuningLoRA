@@ -177,8 +177,19 @@ def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
         "legacy": args.legacy,
     }
 
+    # Patch: skip SMPL body model loading (only needed for rot2xyz visualization,
+    # not for diffusion training/inference with hml_vec representation)
+    import model.smpl as _smpl_module
+    _orig_smpl_init = _smpl_module.SMPL.__init__
+    def _dummy_smpl_init(self, **kwargs):
+        nn.Module.__init__(self)
+    _smpl_module.SMPL.__init__ = _dummy_smpl_init
+
     # Create model
     model = MDM(**model_args)
+
+    # Restore original SMPL init
+    _smpl_module.SMPL.__init__ = _orig_smpl_init
 
     # Load weights
     state_dict = torch.load(str(ckpt_path), map_location=device)
