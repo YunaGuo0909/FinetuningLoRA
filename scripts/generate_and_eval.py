@@ -59,21 +59,23 @@ SEED = 42
 
 @torch.no_grad()
 def generate(model, diffusion, prompts, device, num_samples=4, motion_length=196):
-    """Generate motions using the official MDM model + our diffusion sampler."""
+    """Generate motions using the official MDM model.
+
+    Official MDM predicts x_0 (predict_xstart=True), not noise.
+    Uses DDIM sampling adapted for x_0 prediction.
+    """
     model.eval()
     all_motions = []
 
     for prompt in prompts:
-        # Shape in MDM format: (B, 263, 1, T)
         shape = (num_samples, 263, 1, motion_length)
         x = torch.randn(shape, device=device)
 
-        # Build conditioning
         captions = [prompt] * num_samples
         lengths = [motion_length] * num_samples
         y = build_y_dict(captions, lengths, motion_length, device)
 
-        # DDIM sampling loop
+        # DDIM sampling for x_0 prediction model
         step_size = diffusion.num_timesteps // DDIM_STEPS
         timesteps = list(range(0, diffusion.num_timesteps, step_size))
         timesteps = list(reversed(timesteps))
@@ -81,19 +83,20 @@ def generate(model, diffusion, prompts, device, num_samples=4, motion_length=196
         for i, t_val in enumerate(timesteps):
             t = torch.full((num_samples,), t_val, device=device, dtype=torch.long)
 
-            # Official MDM predicts noise
-            pred_noise = model(x, t, y)
+            # Model predicts x_0 directly
+            x_0_pred = model(x, t, y)
+
+            # Derive predicted noise from x_0 prediction
+            alpha_bar = diffusion.alphas_cumprod.to(device)[t].view(-1, 1, 1, 1)
+            pred_noise = (x - alpha_bar.sqrt() * x_0_pred) / (1 - alpha_bar).clamp(min=1e-8).sqrt()
 
             # DDIM step
-            alpha_bar = diffusion.alphas_cumprod.to(device)[t].view(-1, 1, 1, 1)
             next_t = timesteps[i + 1] if i + 1 < len(timesteps) else 0
             alpha_bar_prev = diffusion.alphas_cumprod.to(device)[next_t].view(1, 1, 1, 1)
 
-            x_0_pred = (x - (1 - alpha_bar).sqrt() * pred_noise) / alpha_bar.sqrt()
             dir_xt = (1 - alpha_bar_prev).sqrt() * pred_noise
             x = alpha_bar_prev.sqrt() * x_0_pred + dir_xt
 
-        # Convert back to (B, T, 263)
         motions = mdm_output_to_motion(x)
         all_motions.append(motions.cpu().numpy())
 

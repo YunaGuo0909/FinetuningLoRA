@@ -192,12 +192,12 @@ def main():
                 # Build conditioning dict
                 y = build_y_dict(captions, lengths, args.max_motion_length, motion.device)
 
-                # Forward pass — official MDM returns (B, 263, 1, T)
-                pred = model(x_t, t, y)
+                # Forward pass — official MDM predicts x_0 (predict_xstart=True)
+                pred_x0 = model(x_t, t, y)
 
-                # Loss (only on valid frames)
+                # Loss: predict x_0, not noise (matching official MDM training)
                 valid_mask = y["mask"].float()  # (B, 1, 1, T)
-                loss_per_elem = (pred - noise) ** 2 * valid_mask
+                loss_per_elem = (pred_x0 - x_0) ** 2 * valid_mask
                 loss = loss_per_elem.sum() / valid_mask.sum().clamp(min=1) / x_0.shape[1]
 
                 accelerator.backward(loss)
