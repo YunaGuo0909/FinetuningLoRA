@@ -10,6 +10,8 @@ Usage:
     python scripts/prepare_data.py --verify            # verify only, no download
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import subprocess
@@ -129,6 +131,15 @@ def prepare_humanml3d():
         import shutil
         if not exists_and_nonempty(HUMANML3D_DIR / "texts"):
             shutil.copytree(source_texts, HUMANML3D_DIR / "texts", dirs_exist_ok=True)
+    else:
+        if not exists_and_nonempty(HUMANML3D_DIR / "texts"):
+            print("  WARNING: Text annotations not found in repo (stored on Google Drive).")
+            print("  Download 'texts.zip' from the HumanML3D Google Drive and extract to:")
+            print(f"    {HUMANML3D_DIR / 'texts'}")
+            print("  Google Drive: https://drive.google.com/drive/folders/1MnixObHR8EB1yKoR1OGua9BMjECPbNBD")
+            print("  Or from your local machine:")
+            print(f"    scp -r texts.zip user@trainmachine:{HUMANML3D_DIR}/")
+            print(f"    cd {HUMANML3D_DIR} && unzip texts.zip")
 
     # Copy split files and stats
     for fname in ["train.txt", "val.txt", "test.txt", "Mean.npy", "Std.npy"]:
@@ -167,7 +178,16 @@ def prepare_100style():
         try:
             run_cmd(["wget", "-O", str(zip_path), STYLE100_URL])
         except (subprocess.CalledProcessError, FileNotFoundError):
-            run_cmd(["curl", "-L", "-o", str(zip_path), STYLE100_URL])
+            try:
+                run_cmd(["curl", "-L", "-o", str(zip_path), STYLE100_URL])
+            except subprocess.CalledProcessError:
+                print("  Download failed (no internet access?).")
+                print("  Please download 100STYLE manually and transfer to training machine:")
+                print(f"    1. Download from: {STYLE100_URL}")
+                print(f"       Or: https://github.com/ianmaurice/100STYLE/releases")
+                print(f"    2. scp 100STYLE.zip user@trainmachine:{zip_path}")
+                print(f"    3. Re-run this script to extract.")
+                return False
     else:
         print("  ZIP already downloaded.")
 
