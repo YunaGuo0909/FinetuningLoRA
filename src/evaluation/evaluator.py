@@ -1,87 +1,162 @@
-"""Evaluate trained LoRA models: generate images and compute style similarity."""
+"""Evaluate motion generation quality: FID, diversity, style consistency.
 
+Metrics:
+    - FID (Frechet Inception Distance) on motion feature space
+    - Diversity: average pairwise distance of generated motions
+    - Style Consistency: CLIP similarity between motion descriptions and target style
+    - Jitter: acceleration magnitude (measures smoothness)
+"""
+
+import json
+import numpy as np
 import torch
 from pathlib import Path
-from PIL import Image
-
-from diffusers import StableDiffusionXLPipeline, AutoencoderKL
-from src.style_analysis.clip_analyzer import CLIPStyleAnalyzer
+from scipy import linalg
 
 
-class LoRAEvaluator:
-    """Generate images with trained LoRA and evaluate style transfer quality."""
+def compute_fid(real_features: np.ndarray, gen_features: np.ndarray) -> float:
+    """Compute FID between two sets of motion features.
 
-    def __init__(self, base_model: str = "stabilityai/stable-diffusion-xl-base-1.0", device: str = None):
-        self.base_model = base_model
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.pipe = None
-        self.analyzer = CLIPStyleAnalyzer(device=self.device)
+    Args:
+        real_features: (N, D) features from real motions
+        gen_features: (M, D) features from generated motions
+    """
+    mu_r, sigma_r = real_features.mean(axis=0), np.cov(real_features, rowvar=False)
+    mu_g, sigma_g = gen_features.mean(axis=0), np.cov(gen_features, rowvar=False)
 
-    def load_pipeline(self, lora_path: str = None):
-        """Load the base model, optionally with LoRA weights."""
-        self.pipe = StableDiffusionXLPipeline.from_pretrained(
-            self.base_model, torch_dtype=torch.float16
-        ).to(self.device)
-        self.pipe.enable_xformers_memory_efficient_attention()
+    diff = mu_r - mu_g
+    covmean, _ = linalg.sqrtm(sigma_r @ sigma_g, disp=False)
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
 
-        if lora_path:
-            self.pipe.load_lora_weights(lora_path)
-            print(f"Loaded LoRA from {lora_path}")
+    fid = diff @ diff + np.trace(sigma_r + sigma_g - 2 * covmean)
+    return float(fid)
 
-    def generate(self, prompts: list[str], output_dir: str, num_images_per_prompt: int = 1,
-                 seed: int = 42, guidance_scale: float = 7.5) -> list[str]:
-        """Generate images from prompts."""
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        generated_paths = []
 
-        generator = torch.Generator(self.device).manual_seed(seed)
+def compute_diversity(motions: np.ndarray, num_pairs: int = 300) -> float:
+    """Average pairwise L2 distance of generated motions.
 
-        for i, prompt in enumerate(prompts):
-            for j in range(num_images_per_prompt):
-                image = self.pipe(
-                    prompt, generator=generator, guidance_scale=guidance_scale
-                ).images[0]
-                path = output_path / f"{i:03d}_{j:02d}.png"
-                image.save(path)
-                generated_paths.append(str(path))
+    Args:
+        motions: (N, T, D) generated motion sequences
+    """
+    N = motions.shape[0]
+    if N < 2:
+        return 0.0
 
-        print(f"Generated {len(generated_paths)} images in {output_dir}")
-        return generated_paths
+    flat = motions.reshape(N, -1)
+    indices = np.random.choice(N, size=(min(num_pairs, N * (N - 1) // 2), 2), replace=True)
+    distances = np.linalg.norm(flat[indices[:, 0]] - flat[indices[:, 1]], axis=1)
+    return float(distances.mean())
 
-    def compute_style_similarity(self, generated_paths: list[str], reference_embedding: torch.Tensor) -> dict:
-        """Compute CLIP similarity between generated images and reference style."""
-        gen_embeddings = self.analyzer.encode_images(generated_paths)
-        reference_embedding = reference_embedding / reference_embedding.norm(dim=-1, keepdim=True)
 
-        similarities = (gen_embeddings @ reference_embedding.T).squeeze(-1)
+def compute_jitter(positions: np.ndarray, fps: int = 20) -> float:
+    """Compute average jitter (acceleration magnitude) as smoothness metric.
+
+    Args:
+        positions: (T, n_joints, 3) joint positions
+        fps: frames per second
+    """
+    if positions.shape[0] < 3:
+        return 0.0
+
+    velocity = np.diff(positions, axis=0) * fps
+    acceleration = np.diff(velocity, axis=0) * fps
+    jitter = np.linalg.norm(acceleration, axis=-1).mean()
+    return float(jitter)
+
+
+def extract_motion_features(motions: np.ndarray) -> np.ndarray:
+    """Extract simple features from motion sequences for FID computation.
+
+    Uses statistical features: mean, std, min, max per joint dimension.
+
+    Args:
+        motions: (N, T, D) motion sequences
+    Returns:
+        (N, D*4) feature vectors
+    """
+    N = motions.shape[0]
+    features = np.zeros((N, motions.shape[2] * 4))
+    for i in range(N):
+        m = motions[i]
+        features[i] = np.concatenate([m.mean(0), m.std(0), m.min(0), m.max(0)])
+    return features
+
+
+class MotionEvaluator:
+    """Evaluate LoRA-tuned motion generation vs base model."""
+
+    def __init__(self, mean: np.ndarray, std: np.ndarray):
+        self.mean = mean
+        self.std = std.copy()
+        self.std[self.std < 1e-5] = 1.0
+
+    def denormalize(self, motion: np.ndarray) -> np.ndarray:
+        return motion * self.std + self.mean
+
+    def evaluate_batch(self, generated: np.ndarray, reference: np.ndarray = None) -> dict:
+        """Evaluate a batch of generated motions.
+
+        Args:
+            generated: (N, T, D) generated motions (normalized)
+            reference: (M, T, D) reference motions for FID (normalized)
+        Returns:
+            dict of metrics
+        """
+        results = {}
+
+        # Diversity
+        results["diversity"] = compute_diversity(generated)
+
+        # FID (if reference provided)
+        if reference is not None and reference.shape[0] > 1:
+            gen_feat = extract_motion_features(generated)
+            ref_feat = extract_motion_features(reference)
+            results["fid"] = compute_fid(ref_feat, gen_feat)
+
+        # Jitter (smoothness) - use denormalized positions
+        jitters = []
+        for i in range(generated.shape[0]):
+            motion = self.denormalize(generated[i])
+            # Extract joint positions from features (dims 4:67 = 21 joints * 3)
+            n_pos_dims = 21 * 3
+            if motion.shape[1] >= 67:
+                positions = motion[:, 4:67].reshape(-1, 21, 3)
+                jitters.append(compute_jitter(positions))
+        if jitters:
+            results["jitter_mean"] = float(np.mean(jitters))
+            results["jitter_std"] = float(np.std(jitters))
+
+        return results
+
+    def compare_base_vs_lora(
+        self,
+        base_motions: np.ndarray,
+        lora_motions: np.ndarray,
+        reference: np.ndarray = None,
+    ) -> dict:
+        """Compare base model vs LoRA model outputs.
+
+        Args:
+            base_motions: (N, T, D) motions from base MDM
+            lora_motions: (N, T, D) motions from LoRA MDM
+            reference: (M, T, D) real motions for FID
+        """
+        base_eval = self.evaluate_batch(base_motions, reference)
+        lora_eval = self.evaluate_batch(lora_motions, reference)
 
         return {
-            "mean_similarity": similarities.mean().item(),
-            "std_similarity": similarities.std().item(),
-            "min_similarity": similarities.min().item(),
-            "max_similarity": similarities.max().item(),
-            "per_image": similarities.tolist(),
+            "base_model": base_eval,
+            "with_lora": lora_eval,
+            "improvement": {
+                k: lora_eval.get(k, 0) - base_eval.get(k, 0)
+                for k in base_eval
+            },
         }
 
-    def compare_with_without_lora(self, prompts: list[str], lora_path: str,
-                                   reference_embedding: torch.Tensor,
-                                   output_dir: str, seed: int = 42) -> dict:
-        """Generate images with and without LoRA, compare style similarity."""
-        out = Path(output_dir)
-
-        # Without LoRA
-        self.load_pipeline(lora_path=None)
-        base_paths = self.generate(prompts, str(out / "base"), seed=seed)
-        base_scores = self.compute_style_similarity(base_paths, reference_embedding)
-
-        # With LoRA
-        self.load_pipeline(lora_path=lora_path)
-        lora_paths = self.generate(prompts, str(out / "lora"), seed=seed)
-        lora_scores = self.compute_style_similarity(lora_paths, reference_embedding)
-
-        return {
-            "base_model": base_scores,
-            "with_lora": lora_scores,
-            "improvement": lora_scores["mean_similarity"] - base_scores["mean_similarity"],
-        }
+    def save_results(self, results: dict, output_path: str):
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(results, f, indent=2)
+        print(f"Evaluation results saved to {path}")

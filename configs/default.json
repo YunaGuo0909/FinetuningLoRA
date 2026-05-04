@@ -1,14 +1,63 @@
 {
-    "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
-    "clip_model": "ViT-L-14",
-    "clip_pretrained": "openai",
-    "wikiart_dir": "/transfer/wikidatasets/steubk/wikiart/version",
-    "embeddings_path": "/transfer/embeddings/wikiart_clip.pt",
-    "training_output_dir": "/transfer/outputs/models",
-    "generation_output_dir": "/transfer/outputs/generated",
-    "retrieval_top_k": 50,
-    "retrieval_min_similarity": 0.5,
-    "image_weight": 0.7,
-    "resolution": 1024,
-    "trigger_word": "sty1e"
+    "project": "motion-style-lora",
+
+    "data": {
+        "humanml3d_dir": "/transfer/datasets/HumanML3D",
+        "style_data_dir": "/transfer/datasets/100STYLE",
+        "style_converted_dir": "/transfer/datasets/style_converted",
+        "mean_path": "/transfer/datasets/HumanML3D/Mean.npy",
+        "std_path": "/transfer/datasets/HumanML3D/Std.npy",
+        "njoints": 22,
+        "nfeats": 263,
+        "max_motion_length": 196,
+        "min_motion_length": 40,
+        "fps": 20
+    },
+
+    "model": {
+        "arch": "mdm",
+        "latent_dim": 512,
+        "ff_size": 1024,
+        "num_layers": 8,
+        "num_heads": 4,
+        "dropout": 0.1,
+        "clip_model": "ViT-B-32",
+        "clip_pretrained": "openai",
+        "clip_dim": 512,
+        "cond_mode": "text"
+    },
+
+    "lora": {
+        "rank": 16,
+        "alpha": 16,
+        "target_modules": ["to_q", "to_k", "to_v", "to_out"],
+        "dropout": 0.05
+    },
+
+    "diffusion": {
+        "num_timesteps": 1000,
+        "beta_schedule": "cosine",
+        "snr_gamma": 5.0
+    },
+
+    "training": {
+        "batch_size": 64,
+        "learning_rate": 1e-4,
+        "max_train_steps": 2000,
+        "gradient_accumulation_steps": 1,
+        "lr_scheduler": "cosine",
+        "lr_warmup_steps": 100,
+        "seed": 42,
+        "checkpointing_steps": 500,
+        "mixed_precision": "fp16"
+    },
+
+    "pretrained_weights": "/transfer/pretrained/mdm_humanml3d.pt",
+
+    "output": {
+        "model_dir": "/transfer/outputs/models",
+        "generation_dir": "/transfer/outputs/generated",
+        "eval_dir": "/transfer/outputs/eval",
+        "viz_dir": "/transfer/outputs/viz"
+    }
 }

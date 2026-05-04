@@ -5,7 +5,9 @@ __pycache__/
 *.safetensors
 data/
 outputs/
+pretrained/
 .vscode/
 *.egg-info/
 dist/
 build/
+wandb/
