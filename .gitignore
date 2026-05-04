@@ -3,7 +3,7 @@ __pycache__/
 .env
 *.pt
 *.safetensors
-data/
+/data/
 outputs/
 pretrained/
 .vscode/
