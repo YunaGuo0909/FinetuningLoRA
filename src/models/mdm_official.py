@@ -117,10 +117,26 @@ def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
     """
     ckpt_dir = Path(checkpoint_dir)
 
-    # Load args
+    # Load args, fill in defaults for fields added in newer MDM versions
     args_path = ckpt_dir / "args.json"
     with open(args_path) as f:
         args_dict = json.load(f)
+
+    defaults = {
+        "unconstrained": False,
+        "keyframe": False,
+        "target_joint_names": None,
+        "pos_embed_max_len": 5000,
+        "multi_target_cond": None,
+        "clip_version": "ViT-B/32",
+        "text_encoder_type": "clip",
+        "mask_frames": False,
+        "prefix_len": 0,
+    }
+    for k, v in defaults.items():
+        if k not in args_dict:
+            args_dict[k] = v
+
     args = Namespace(**args_dict)
 
     # Find the checkpoint file
