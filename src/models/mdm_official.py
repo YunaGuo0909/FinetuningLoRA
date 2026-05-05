@@ -43,6 +43,7 @@ class SplitQKVAttention(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
+        self.batch_first = False  # match nn.MultiheadAttention interface
         self.to_q = nn.Linear(embed_dim, embed_dim)
         self.to_k = nn.Linear(embed_dim, embed_dim)
         self.to_v = nn.Linear(embed_dim, embed_dim)
