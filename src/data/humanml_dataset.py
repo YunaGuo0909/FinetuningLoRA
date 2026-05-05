@@ -144,19 +144,24 @@ class StyleMotionDataset(Dataset):
                 entry = json.loads(line)
                 self.entries.append(entry)
 
-        # Compute mean/std from the style data itself (BVH-converted features
-        # have different value ranges than HumanML3D processed features)
-        all_data = []
-        for entry in self.entries:
-            m = np.load(self.data_dir / "motions" / entry["file"])
-            all_data.append(m)
-        all_data = np.concatenate(all_data, axis=0)
-        self.mean = all_data.mean(axis=0)
-        self.std = all_data.std(axis=0)
+        # Use HumanML3D stats so LoRA operates in the same space as the
+        # pretrained model.  Clip extreme values to avoid NaN from BVH
+        # features that have different scale than HumanML3D's processing.
+        self.mean = mean.copy()
+        self.std = std.copy()
         self.std[self.std < 1e-5] = 1.0
+        self.clip_val = 5.0  # clip normalized values to [-5, 5]
 
+        # Report stats
+        all_data = np.concatenate(
+            [np.load(self.data_dir / "motions" / e["file"]) for e in self.entries], axis=0)
+        normed = (all_data - self.mean) / self.std
         print(f"StyleMotionDataset: {len(self.entries)} motions from {data_dir}")
-        print(f"  Computed own stats: mean=[{self.mean.min():.2f}, {self.mean.max():.2f}], std=[{self.std.min():.4f}, {self.std.max():.2f}]")
+        print(f"  Raw range: [{all_data.min():.2f}, {all_data.max():.2f}]")
+        print(f"  After HumanML3D norm: [{normed.min():.1f}, {normed.max():.1f}]")
+        print(f"  Clipping to [{-self.clip_val}, {self.clip_val}]")
+        pct_clipped = (np.abs(normed) > self.clip_val).mean() * 100
+        print(f"  Values clipped: {pct_clipped:.1f}%")
 
     def __len__(self):
         return len(self.entries)
@@ -173,6 +178,7 @@ class StyleMotionDataset(Dataset):
             T = self.max_motion_length
 
         motion = (motion - self.mean) / self.std
+        motion = np.clip(motion, -self.clip_val, self.clip_val)
 
         pad_len = self.max_motion_length - T
         mask = np.zeros(self.max_motion_length, dtype=bool)
