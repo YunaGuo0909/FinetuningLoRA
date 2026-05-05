@@ -3,6 +3,8 @@
 Supports DDPM training and both DDPM / DDIM sampling.
 """
 
+from __future__ import annotations
+
 import math
 import torch
 import torch.nn.functional as F
