@@ -47,6 +47,29 @@ def motion_features_to_positions(motion: np.ndarray) -> np.ndarray:
             offset = 4 + (j - 1) * 3
             positions[t, j] = positions[t, 0] + motion[t, offset:offset + 3]
 
+    # Foot contact-based sliding reduction
+    # HumanML3D dims 259-262: left heel, left toe, right heel, right toe
+    # Foot joints: 10 (L_Foot), 11 (R_Foot)
+    if motion.shape[1] >= 263:
+        foot_contact = motion[:, 259:263]  # (T, 4)
+        l_contact = (foot_contact[:, 0] + foot_contact[:, 1]) / 2  # left foot
+        r_contact = (foot_contact[:, 2] + foot_contact[:, 3]) / 2  # right foot
+
+        threshold = 0.5
+        for t in range(1, T):
+            if l_contact[t] > threshold:
+                # Pin left foot XZ to previous frame
+                positions[t, 10, 0] = positions[t - 1, 10, 0]
+                positions[t, 10, 2] = positions[t - 1, 10, 2]
+                # Also pin ankle
+                positions[t, 7, 0] = positions[t - 1, 7, 0]
+                positions[t, 7, 2] = positions[t - 1, 7, 2]
+            if r_contact[t] > threshold:
+                positions[t, 11, 0] = positions[t - 1, 11, 0]
+                positions[t, 11, 2] = positions[t - 1, 11, 2]
+                positions[t, 8, 0] = positions[t - 1, 8, 0]
+                positions[t, 8, 2] = positions[t - 1, 8, 2]
+
     return positions
 
 

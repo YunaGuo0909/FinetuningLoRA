@@ -34,10 +34,10 @@ from src.visualization.motion_viz import (
 # ---------------------------------------------------------------------------
 
 CHECKPOINT_DIR = "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512"
-LORA_PATH = "/transfer/loraoutputs/models/style_lora_v3/final"
+LORA_PATH = "/transfer/loraoutputs/models/style_lora_v4/final"
 STYLE_DATA_DIR = "/transfer/loradataset/style_converted"
 HML3D_DIR = "/transfer/loradataset/humanml3d"
-OUTPUT_DIR = "/transfer/loraoutputs/eval/style_lora_v3"
+OUTPUT_DIR = "/transfer/loraoutputs/eval/style_lora_v4"
 
 PROMPTS = [
     "a person walking like a zombie",
