@@ -67,7 +67,7 @@ class SplitQKVAttention(nn.Module):
         return new
 
     def forward(self, query, key, value, key_padding_mask=None,
-                need_weights=False, attn_mask=None):
+                need_weights=False, attn_mask=None, **kwargs):
         """Same signature as nn.MultiheadAttention.forward().
 
         Args:
