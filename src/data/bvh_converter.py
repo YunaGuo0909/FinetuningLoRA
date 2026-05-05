@@ -9,6 +9,8 @@ Usage:
     features = converter.convert("path/to/animation.bvh")  # returns (T, 263) numpy array
 """
 
+from __future__ import annotations
+
 import re
 import json
 import numpy as np
@@ -137,13 +139,16 @@ def euler_to_rotation_matrix(angles_deg: np.ndarray, order: str = "ZXY") -> np.n
     return R
 
 
-def forward_kinematics(joints: list, frame_data: np.ndarray) -> np.ndarray:
-    """Compute global joint positions from BVH frame data.
+def forward_kinematics(joints: list, frame_data: np.ndarray):
+    """Compute global joint positions and local rotations from BVH frame data.
 
-    Returns: (n_joints, 3) global positions
+    Returns:
+        positions: (n_joints, 3) global positions
+        local_rotations: list of (3, 3) local rotation matrices per joint
     """
     positions = np.zeros((len(joints), 3))
-    rotations = [np.eye(3)] * len(joints)
+    global_rotations = [np.eye(3)] * len(joints)
+    local_rotations = [np.eye(3)] * len(joints)
 
     ch_idx = 0
     for j, joint in enumerate(joints):
@@ -151,7 +156,7 @@ def forward_kinematics(joints: list, frame_data: np.ndarray) -> np.ndarray:
         channels = joint["channels"]
         parent = joint["parent"]
 
-        parent_rot = rotations[parent] if parent >= 0 else np.eye(3)
+        parent_rot = global_rotations[parent] if parent >= 0 else np.eye(3)
         parent_pos = positions[parent] if parent >= 0 else np.zeros(3)
 
         # Parse channels
@@ -186,9 +191,10 @@ def forward_kinematics(joints: list, frame_data: np.ndarray) -> np.ndarray:
         else:
             positions[j] = offset + local_pos
 
-        rotations[j] = global_rot
+        global_rotations[j] = global_rot
+        local_rotations[j] = local_rot
 
-    return positions
+    return positions, local_rotations
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +202,11 @@ def forward_kinematics(joints: list, frame_data: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def rotation_matrix_to_6d(R: np.ndarray) -> np.ndarray:
-    """Convert 3x3 rotation matrix to 6D representation (first two columns)."""
-    return R[:, :2].T.flatten()  # (6,)
+    """Convert 3x3 rotation matrix to 6D representation (first two columns).
+
+    Standard 6D: [col0, col1] = [R00, R10, R20, R01, R11, R21]
+    """
+    return np.concatenate([R[:, 0], R[:, 1]])  # (6,)
 
 
 def compute_foot_contacts(positions_seq: np.ndarray, threshold: float = 0.05) -> np.ndarray:
@@ -221,11 +230,14 @@ def compute_foot_contacts(positions_seq: np.ndarray, threshold: float = 0.05) ->
     return contacts
 
 
-def compute_humanml3d_features(positions_seq: np.ndarray) -> np.ndarray:
+def compute_humanml3d_features(positions_seq: np.ndarray,
+                                rotations_seq: list = None) -> np.ndarray:
     """Convert joint positions sequence to HumanML3D 263-dim features.
 
     Args:
         positions_seq: (T, 22, 3) joint positions
+        rotations_seq: list of T elements, each a list of 22 (3,3) local rotation matrices.
+                       If None, identity rotations are used.
 
     Returns:
         (T, 263) feature array:
@@ -233,7 +245,7 @@ def compute_humanml3d_features(positions_seq: np.ndarray) -> np.ndarray:
             [1:3]   root_linear_velocity (2) - XZ plane
             [3]     root_y (1)
             [4:67]  ric_data - root-relative joint positions (21*3=63)
-            [67:193] rot_data - placeholder 6D rotations (21*6=126)
+            [67:193] rot_data - 6D local joint rotations (21*6=126)
             [193:259] local_velocity (22*3=66)
             [259:263] foot_contact (4)
     """
@@ -244,51 +256,53 @@ def compute_humanml3d_features(positions_seq: np.ndarray) -> np.ndarray:
 
     for t in range(T):
         root_pos = positions_seq[t, 0]
-        idx = 0
 
-        # Root rotation velocity (approximate from facing direction changes)
+        # [0] Root rotation velocity
         if t > 0:
-            prev_fwd = positions_seq[t - 1, 2] - positions_seq[t - 1, 1]  # R_hip - L_hip cross
+            prev_fwd = positions_seq[t - 1, 2] - positions_seq[t - 1, 1]
             curr_fwd = positions_seq[t, 2] - positions_seq[t, 1]
             prev_angle = np.arctan2(prev_fwd[0], prev_fwd[2])
             curr_angle = np.arctan2(curr_fwd[0], curr_fwd[2])
-            features[t, 0] = curr_angle - prev_angle
-        idx = 1
+            diff = curr_angle - prev_angle
+            # Wrap to [-pi, pi]
+            features[t, 0] = np.arctan2(np.sin(diff), np.cos(diff))
 
-        # Root linear velocity (XZ)
+        # [1:3] Root linear velocity (XZ)
         if t > 0:
             features[t, 1] = positions_seq[t, 0, 0] - positions_seq[t - 1, 0, 0]
             features[t, 2] = positions_seq[t, 0, 2] - positions_seq[t - 1, 0, 2]
-        idx = 3
 
-        # Root height
+        # [3] Root height
         features[t, 3] = root_pos[1]
+
+        # [4:67] Root-relative joint positions (21 joints)
         idx = 4
-
-        # Root-relative joint positions (exclude root itself)
         for j in range(1, 22):
-            rel = positions_seq[t, j] - root_pos
-            features[t, idx:idx + 3] = rel
+            features[t, idx:idx + 3] = positions_seq[t, j] - root_pos
             idx += 3
-        # idx = 67
 
-        # 6D rotation placeholders (identity-based when we only have positions)
-        for j in range(1, 22):
-            features[t, idx:idx + 6] = [1, 0, 0, 1, 0, 0]  # identity 6D
-            idx += 6
-        # idx = 193
+        # [67:193] 6D joint rotations (21 joints, exclude root)
+        idx = 67
+        if rotations_seq is not None:
+            for j in range(1, 22):
+                R = rotations_seq[t][j]
+                features[t, idx:idx + 6] = rotation_matrix_to_6d(R)
+                idx += 6
+        else:
+            for j in range(1, 22):
+                features[t, idx:idx + 6] = [1, 0, 0, 0, 1, 0]  # identity 6D
+                idx += 6
 
-        # Local velocities
+        # [193:259] Joint velocities (all 22 joints)
+        idx = 193
         if t > 0:
             for j in range(22):
-                vel = positions_seq[t, j] - positions_seq[t - 1, j]
-                features[t, idx:idx + 3] = vel
+                features[t, idx:idx + 3] = positions_seq[t, j] - positions_seq[t - 1, j]
                 idx += 3
         else:
             idx += 66
-        # idx = 259
 
-    # Foot contacts
+    # [259:263] Foot contacts
     features[:, 259:263] = compute_foot_contacts(positions_seq)
 
     return features
@@ -372,14 +386,21 @@ class BVHToHumanML3D:
                 print(f"Warning: joint '{target_name}' not found in BVH, using root")
                 mapping.append(0)
 
-        # Forward kinematics for all frames
+        # Forward kinematics for all frames (positions + local rotations)
         T = data["num_frames"]
         all_positions = np.zeros((T, len(joints), 3))
+        all_local_rots = []  # T x n_joints list of (3,3)
         for t in range(T):
-            all_positions[t] = forward_kinematics(joints, frames[t])
+            pos, local_rots = forward_kinematics(joints, frames[t])
+            all_positions[t] = pos
+            all_local_rots.append(local_rots)
 
-        # Retarget to 22 joints
+        # Retarget to 22 joints (positions and rotations)
         positions_22 = all_positions[:, mapping]  # (T, 22, 3)
+        rotations_22 = []
+        for t in range(T):
+            rots = [all_local_rots[t][mapping[j]] for j in range(22)]
+            rotations_22.append(rots)
 
         # Convert units: BVH is often in cm, HumanML3D uses meters
         # Heuristic: if root height > 50, assume cm
@@ -393,14 +414,20 @@ class BVHToHumanML3D:
             new_T = int(T * ratio)
             old_t = np.linspace(0, T - 1, T)
             new_t = np.linspace(0, T - 1, new_T)
-            resampled = np.zeros((new_T, 22, 3))
+
+            # Resample positions
+            resampled_pos = np.zeros((new_T, 22, 3))
             for j in range(22):
                 for axis in range(3):
-                    resampled[:, j, axis] = np.interp(new_t, old_t, positions_22[:, j, axis])
-            positions_22 = resampled
+                    resampled_pos[:, j, axis] = np.interp(new_t, old_t, positions_22[:, j, axis])
+            positions_22 = resampled_pos
 
-        # Compute features
-        features = compute_humanml3d_features(positions_22)
+            # Resample rotations (nearest-neighbor for rotation matrices)
+            indices = np.round(new_t).astype(int).clip(0, T - 1)
+            rotations_22 = [rotations_22[i] for i in indices]
+
+        # Compute features with real rotations
+        features = compute_humanml3d_features(positions_22, rotations_22)
         return features
 
     def convert_directory(self, bvh_dir: str, output_dir: str, style_label: str = "") -> list[dict]:

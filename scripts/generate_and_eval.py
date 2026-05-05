@@ -40,11 +40,12 @@ HML3D_DIR = "/transfer/loradataset/humanml3d"
 OUTPUT_DIR = "/transfer/loraoutputs/eval/style_lora_v4"
 
 PROMPTS = [
-    "a person walking like a zombie",
-    "a person walking happily with energy",
-    "a person walking slowly like an old person",
-    "a person walking like a robot",
-    "a person stumbling around drunk",
+    # Generic prompts — LoRA should add style even without explicit style words
+    "a person walking forward",
+    "a person walking in a circle",
+    "a person stepping sideways",
+    "a person turning around",
+    "a person walking and then stopping",
 ]
 
 NUM_SAMPLES = 4
