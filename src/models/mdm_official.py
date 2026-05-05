@@ -208,13 +208,17 @@ def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
 
 
 def replace_attention_layers(model: nn.Module) -> nn.Module:
-    """Replace all nn.MultiheadAttention in the model with SplitQKVAttention.
+    """Replace nn.MultiheadAttention in MDM transformer with SplitQKVAttention.
 
+    Only targets the MDM's own transformer layers, NOT the CLIP text encoder.
     This enables PEFT LoRA to target to_q, to_k, to_v, to_out.
     """
     count = 0
-    # Walk all submodules and replace any nn.MultiheadAttention
+    # Walk all submodules and replace any nn.MultiheadAttention,
+    # but skip the CLIP model (clip_model) to avoid dtype issues
     for name, module in model.named_modules():
+        if "clip_model" in name:
+            continue
         for attr_name, child in list(module.named_children()):
             if isinstance(child, nn.MultiheadAttention):
                 new_attn = SplitQKVAttention.from_multihead_attention(child)
