@@ -3,6 +3,19 @@
 Uses the existing HumanML3D data (already in correct feature space) instead of
 BVH-converted data, avoiding normalization mismatch entirely.
 
+Outputs:
+    output_dir/
+        old/
+            motions/
+            metadata.jsonl
+        angry/
+            motions/
+            metadata.jsonl
+        ...
+        mixed/          # all styles combined
+            motions/    (symlinks or copies)
+            metadata.jsonl
+
 Usage:
     python scripts/filter_style_data.py \
         --humanml3d_dir /transfer/loradataset/humanml3d \
@@ -18,7 +31,6 @@ import numpy as np
 from pathlib import Path
 
 # Style definitions: keywords to search in captions
-# Each style has multiple search terms to maximize matches
 STYLE_FILTERS = {
     "zombie": {
         "keywords": ["zombie", "stiff", "dragging", "limp", "stumbl"],
@@ -126,26 +138,21 @@ def main():
 
     print(f"\n  Total unique: {len(all_matched)} motions")
 
-    # Save
-    out_dir.mkdir(parents=True, exist_ok=True)
-    motions_out = out_dir / "motions"
-    motions_out.mkdir(exist_ok=True)
-
-    metadata = []
-    copied = set()
-
+    # --- Save per-style directories ---
     for style_name, matched in results.items():
+        style_dir = out_dir / style_name
+        motions_out = style_dir / "motions"
+        motions_out.mkdir(parents=True, exist_ok=True)
+
         caption_override = STYLE_FILTERS[style_name]["caption_override"]
+        metadata = []
+
         for m in matched:
             mid = m["id"]
             src = motion_dir / f"{mid}.npy"
             dst = motions_out / f"{mid}.npy"
+            shutil.copy2(src, dst)
 
-            if mid not in copied:
-                shutil.copy2(src, dst)
-                copied.add(mid)
-
-            # Use both original caption and style-specific override
             original_caption = m["captions"][0] if m["captions"] else caption_override
             metadata.append({
                 "file": f"{mid}.npy",
@@ -155,19 +162,54 @@ def main():
                 "length": m["length"],
             })
 
-    # Write metadata
-    with open(out_dir / "metadata.jsonl", "w", encoding="utf-8") as f:
-        for entry in metadata:
+        with open(style_dir / "metadata.jsonl", "w", encoding="utf-8") as f:
+            for entry in metadata:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        print(f"\n  {style_name}: {len(metadata)} motions -> {style_dir}")
+
+    # --- Save mixed (all styles combined) ---
+    mixed_dir = out_dir / "mixed"
+    mixed_motions = mixed_dir / "motions"
+    mixed_motions.mkdir(parents=True, exist_ok=True)
+
+    mixed_metadata = []
+    copied = set()
+
+    for style_name, matched in results.items():
+        caption_override = STYLE_FILTERS[style_name]["caption_override"]
+        for m in matched:
+            mid = m["id"]
+            src = motion_dir / f"{mid}.npy"
+            dst = mixed_motions / f"{mid}.npy"
+
+            if mid not in copied:
+                shutil.copy2(src, dst)
+                copied.add(mid)
+
+            original_caption = m["captions"][0] if m["captions"] else caption_override
+            mixed_metadata.append({
+                "file": f"{mid}.npy",
+                "style": style_name,
+                "caption": original_caption,
+                "style_caption": caption_override,
+                "length": m["length"],
+            })
+
+    with open(mixed_dir / "metadata.jsonl", "w", encoding="utf-8") as f:
+        for entry in mixed_metadata:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # Summary
-    print(f"\nSaved to {out_dir}")
-    print(f"  {len(copied)} unique motion files")
-    print(f"  {len(metadata)} metadata entries")
+    print(f"\n  mixed: {len(mixed_metadata)} entries ({len(copied)} unique files) -> {mixed_dir}")
 
+    # Summary
+    print(f"\n{'=' * 50}")
+    print("Summary")
+    print(f"{'=' * 50}")
     for style_name in STYLE_FILTERS:
-        count = sum(1 for m in metadata if m["style"] == style_name)
-        print(f"    {style_name:10s}: {count}")
+        count = len(results[style_name])
+        print(f"  {style_name:10s}: {count:4d} motions  -> {out_dir / style_name}")
+    print(f"  {'mixed':10s}: {len(mixed_metadata):4d} entries  -> {mixed_dir}")
 
 
 if __name__ == "__main__":

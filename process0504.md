@@ -218,7 +218,7 @@ self.mean = all_data.mean(axis=0)
 self.std = all_data.std(axis=0)
 ```
 
-### Current Status
+### Current Status (end of Phase 6)
 - MDM weights load successfully (138 params mapped, 1 missing for pos_embedding)
 - LoRA applied: 524,288 trainable params (2.83% of total)
 - CLIP ViT-B/32 loaded from HuggingFace (cached on `/transfer/hf_cache/`)
@@ -227,12 +227,182 @@ self.std = all_data.std(axis=0)
 
 ---
 
+## Phase 7: Switching to Official MDM Codebase
+
+### Problem: Custom MDM Produces Garbage Output
+Generated motions from the custom MDM implementation were garbled — random tangled lines instead of human skeletons, despite tensors having correct shapes.
+
+**Root Cause**: Subtle architectural differences between our reimplementation and the official MDM code. Even small mismatches (normalization order, conditioning token layout, etc.) cause the pretrained weights to produce garbage.
+
+**Solution**: Switched to the **official MDM codebase** (`/transfer/mdm_official`) with a wrapper layer:
+- `src/models/mdm_official.py` — loads official MDM, patches SMPL init, replaces attention layers
+- `SplitQKVAttention` — drop-in replacement for `nn.MultiheadAttention`, splits fused QKV into separate `to_q`, `to_k`, `to_v`, `to_out` Linear layers for PEFT LoRA targeting
+
+### Problem: SMPL Body Model Not Available
+Official MDM imports SMPL body model, which requires `SMPL_NEUTRAL.pkl` (not needed for our hml_vec representation).
+
+**Solution**: Patched `SMPL.__init__` with a dummy during model creation:
+```python
+def _dummy_smpl_init(self, **kwargs):
+    nn.Module.__init__(self)
+_smpl_module.SMPL.__init__ = _dummy_smpl_init
+```
+
+### Problem: `args.json` Missing Fields
+Newer MDM code expects fields not present in older checkpoints (`unconstrained`, `keyframe`, etc.).
+
+**Solution**: Added defaults dict to fill in missing fields before creating the model.
+
+### Problem: x₀ Prediction vs Noise Prediction
+MDM uses `predict_xstart=True` — the model predicts the clean sample x₀ directly, NOT noise. Our training loss and DDIM sampler were both written for noise prediction.
+
+**Solution**:
+- Training loss changed from `(pred - noise)²` to `(pred_x0 - x_0)²`
+- DDIM sampler corrected to derive noise from x₀ prediction, then step
+
+### Problem: `model.to(device)` Returns None
+Official MDM's `.to()` method doesn't return `self`.
+
+**Solution**: `model.to(device)` → `model.to(device); return model`
+
+### Problem: `replace_attention_layers` Also Replaced CLIP Layers
+The function replaced ALL `nn.MultiheadAttention` in the model, including CLIP's (which uses float16). LoRA layers are float32 → dtype mismatch crash.
+
+**Solution**: Skip modules with `clip_model` in the name:
+```python
+for name, module in model.named_modules():
+    if "clip_model" in name:
+        continue
+```
+
+### Problem: SplitQKVAttention Missing Attributes
+PyTorch's `TransformerEncoderLayer` checks `self_attn.batch_first` and passes `is_causal` kwarg.
+
+**Solution**: Added `self.batch_first = False` attribute and `**kwargs` to forward signature.
+
+---
+
+## Phase 8: First Real Training Run (style_lora_v3)
+
+### Training with Self-Normalized Style Data
+Used `StyleMotionDataset` with self-computed mean/std (not HumanML3D stats) + clip to [-5, 5].
+
+**Result**: Training completed (2000 steps), loss converged (not NaN). But...
+
+### Problem: Base vs LoRA Output Identical
+Generation showed **no difference** between base model and LoRA model.
+
+**Diagnosis** (`scripts/diagnose_lora.py`):
+- LoRA path `/transfer/loraoutputs/models/style_lora_v3/final` **did not exist**
+- The training had never actually been run! All previous runs had been debugging other issues (model loading, CLIP dtype, attention interface)
+- Generation script fell back to using base motions for both outputs
+
+### Actually Running Training
+After fixing all model loading bugs, ran training for real:
+- 40 motions, 2000 steps, loss converged
+- LoRA weights saved successfully
+
+### Problem: Normalization Space Mismatch
+Even with successful training, LoRA effect was weak because:
+- Base MDM pretrained in HumanML3D-normalized space
+- LoRA trained in self-normalized style data space (different mean/std)
+- At inference, diffusion operates in HumanML3D space → LoRA's learned adjustments don't transfer
+
+**Solution**: Changed `StyleMotionDataset` to use HumanML3D mean/std + clip extreme values to [-5, 5]:
+```python
+self.mean = mean.copy()  # from HumanML3D
+self.std = std.copy()
+motion = np.clip((motion - self.mean) / self.std, -5.0, 5.0)
+```
+
+### Result After Fix
+- LoRA output now visibly different from base model
+- But 10.4% of values clipped → significant information loss
+- Skeleton animation had foot sliding (common diffusion model issue)
+- Style effect visible but weak
+
+---
+
+## Phase 9: Experimental Design Fix
+
+### Problem: LoRA Value Not Demonstrated
+Testing with style-specific prompts ("walking like a zombie") showed little difference because the base MDM already understands these from CLIP text conditioning.
+
+**Key Insight**: LoRA's value is making the model **default to a style** even with generic prompts. Should test with prompts like "a person walking forward" and show that LoRA adds style implicitly.
+
+### Attempt: Filter HumanML3D by Captions
+Created `scripts/filter_style_data.py` to select style-relevant motions from HumanML3D by text:
+- Searched captions for keywords (zombie, old, drunk, happy, etc.)
+- Found 2,974 unique motions across 8 styles
+- Data already in correct HumanML3D feature space → zero normalization mismatch
+
+**Training (style_lora_v4)**: 2974 motions, 3000 steps, HumanML3D normalization.
+
+**Problem**: This data comes from the same distribution the base model was trained on → LoRA learns nothing new. Base model already knows these styles from its original training.
+
+### Correct Approach: Fix BVH Converter
+For LoRA to add value, it must learn from **external style data** (100STYLE mocap) that the base model hasn't seen. The normalization mismatch must be fixed at the source.
+
+---
+
+## Phase 10: BVH Converter Fix (Current)
+
+### Root Cause of Normalization Mismatch
+263-dim features contain 126 dimensions of **6D rotation data** (dims 67–192). Our original BVH converter used **identity placeholders** `[1,0,0,1,0,0]` for all rotation features — constant values completely unlike real HumanML3D rotation data. This single issue caused the bulk of the normalization mismatch.
+
+### Fix: Extract Real Rotations from BVH
+BVH files contain local Euler rotations for every joint at every frame. Modified the converter to:
+
+1. **`forward_kinematics()`** now returns both positions AND local rotation matrices
+2. **`compute_humanml3d_features()`** accepts rotation matrices and converts to 6D representation using `rotation_matrix_to_6d()`
+3. **`rotation_matrix_to_6d()`** fixed to produce standard format: `[col0, col1]` = first two columns of rotation matrix
+4. Root angular velocity wrapped to `[-π, π]`
+
+### Reconversion Results
+Reconverted 5 styles (40 motions) with fixed converter → `style_converted_v2/`:
+
+```
+Per-group normalized ranges:
+Group                      Converted            HumanML3D
+root_rot_vel           [-27.2, 30.4]        [-15.3, 15.8]
+root_vel_xz              [-8.5, 8.3]        [-14.2, 36.7]
+root_height              [-1.1, 1.1]          [-5.8, 5.8]
+joint_positions         [-11.7, 8.4]        [-11.3, 16.3]
+joint_rotations_6d       [-5.1, 5.1]          [-6.6, 5.5]  ← was [-489, 489]!
+joint_velocities       [-19.9, 24.7]        [-31.2, 41.8]
+foot_contacts            [-2.4, 0.4]          [-2.4, 0.4]
+
+Values outside [-5, 5]: 8.5% (down from ~50% with identity rotations)
+```
+
+**Rotation features now align with HumanML3D.** Main remaining outlier is `root_rot_vel` (some sudden orientation changes in BVH data).
+
+### Current Status
+- BVH converter fixed with real rotation data
+- `style_converted_v2/` generated (40 motions, 5 styles)
+- **Next**: Train style_lora_v5 with fixed data, generate with generic prompts, compare base vs LoRA
+
+---
+
+## Phase Summary
+
+| Version | Data Source | Normalization | Result |
+|---------|-----------|---------------|--------|
+| v1 | 100STYLE BVH (identity rotations) | Self-computed | NaN loss |
+| v2 | 100STYLE BVH (identity rotations) | Self-computed | Trained but no effect at inference (space mismatch) |
+| v3 | 100STYLE BVH (identity rotations) | HumanML3D + clip [-5,5] | Weak effect, 10.4% clipped |
+| v4 | HumanML3D filtered by captions | HumanML3D (native) | Trained but base already knows these styles |
+| **v5** | **100STYLE BVH (real rotations)** | **HumanML3D + clip [-5,5]** | **In progress — 8.5% clip, rotations aligned** |
+
+---
+
 ## Remaining Tasks
 
-| Task | Status | Est. Time |
-|------|--------|-----------|
-| Re-run MDM + LoRA training (v2) | In progress | ~6 min |
-| Generate + evaluate results | Not started | 1 hour |
-| MLD + LoRA training (comparison) | Not started | 2 days |
-| Visualization outputs | Not started | 1 hour |
-| Critical Reflective Paper | Not started | 2-3 days |
+| Task | Status |
+|------|--------|
+| Train style_lora_v5 (fixed BVH data) | In progress |
+| Generate + evaluate (generic prompts) | Not started |
+| MLD + LoRA training (comparison) | Not started |
+| Final visualisations for report | Not started |
+| Critical Reflective Paper | Not started |
+| Progress report slides + script | Done |
