@@ -70,6 +70,11 @@ def motion_features_to_positions(motion: np.ndarray) -> np.ndarray:
                 positions[t, 8, 0] = positions[t - 1, 8, 0]
                 positions[t, 8, 2] = positions[t - 1, 8, 2]
 
+    # Fix root visual position: place pelvis at midpoint of hips
+    # to avoid the "extra bone" artifact between legs
+    for t in range(T):
+        positions[t, 0] = (positions[t, 1] + positions[t, 2]) / 2
+
     return positions
 
 

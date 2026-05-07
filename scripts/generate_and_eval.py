@@ -36,13 +36,14 @@ CHECKPOINT_DIR = "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc
 HML3D_DIR = "/transfer/loradataset/humanml3d"
 OUTPUT_DIR = "/transfer/loraoutputs/eval/multi_style"
 
-# LoRA models to compare
+# LoRA models to compare (100STYLE BVH data)
 LORA_MODELS = {
-    "old":   "/transfer/loraoutputs/models/lora_old/final",
-    "angry": "/transfer/loraoutputs/models/lora_angry/final",
-    "drunk": "/transfer/loraoutputs/models/lora_drunk/final",
-    "happy": "/transfer/loraoutputs/models/lora_happy/final",
-    "mixed": "/transfer/loraoutputs/models/lora_mixed/final",
+    "zombie":    "/transfer/loraoutputs/models/lora_bvh_zombie/final",
+    "elated":    "/transfer/loraoutputs/models/lora_bvh_elated/final",
+    "old":       "/transfer/loraoutputs/models/lora_bvh_old/final",
+    "depressed": "/transfer/loraoutputs/models/lora_bvh_depressed/final",
+    "drunk":     "/transfer/loraoutputs/models/lora_bvh_drunk/final",
+    "mixed":     "/transfer/loraoutputs/models/lora_bvh_mixed/final",
 }
 
 PROMPTS = [

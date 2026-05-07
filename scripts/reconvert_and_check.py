@@ -1,5 +1,12 @@
 """Reconvert 100STYLE BVH with fixed rotations, then check normalization compatibility.
 
+Outputs per-style directories for single-style LoRA training:
+    output_dir/
+        zombie/motions/ + metadata.jsonl
+        elated/motions/ + metadata.jsonl
+        ...
+        mixed/motions/ + metadata.jsonl  (all styles combined)
+
 Usage:
     python scripts/reconvert_and_check.py
 """
@@ -13,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.bvh_converter import BVHToHumanML3D
 
 STYLE_DIR = "/transfer/loradataset/100STYLE"
-OUTPUT_DIR = "/transfer/loradataset/style_converted_v2"
+OUTPUT_DIR = "/transfer/loradataset/style_bvh"
 HML3D_DIR = "/transfer/loradataset/humanml3d"
 
 STYLES = ["Zombie", "Elated", "Old", "Depressed", "Drunk"]
@@ -23,14 +30,15 @@ def main():
     converter = BVHToHumanML3D()
     style_dir = Path(STYLE_DIR)
     out_dir = Path(OUTPUT_DIR)
-    motions_dir = out_dir / "motions"
-    motions_dir.mkdir(parents=True, exist_ok=True)
 
-    all_metadata = []
+    all_metadata = []  # for mixed
 
     for style in STYLES:
-        # 100STYLE: BVH files named like "Zombie_Walk_001.bvh" in root dir
-        # OR in subdirectories per style
+        style_lower = style.lower()
+        style_out = out_dir / style_lower
+        motions_dir = style_out / "motions"
+        motions_dir.mkdir(parents=True, exist_ok=True)
+
         sub_dir = style_dir / style
         if sub_dir.is_dir():
             bvh_files = sorted(sub_dir.glob("*.bvh"))
@@ -42,7 +50,7 @@ def main():
             continue
 
         print(f"\nConverting {style} ({len(bvh_files)} files)...")
-        converted = 0
+        style_metadata = []
         for bvh_file in bvh_files:
             features = converter.convert(str(bvh_file))
             if features is None:
@@ -55,28 +63,47 @@ def main():
             out_file = f"{stem}.npy"
             np.save(motions_dir / out_file, features)
 
-            caption = f"a person {action}ing in {style.lower()} style"
-            all_metadata.append({
+            caption = f"a person {action}ing in {style_lower} style"
+            entry = {
                 "file": out_file,
                 "action": action,
-                "style": style.lower(),
+                "style": style_lower,
                 "caption": caption,
                 "length": features.shape[0],
-            })
-            converted += 1
+            }
+            style_metadata.append(entry)
+            all_metadata.append(entry)
 
-        print(f"  {style}: {converted} motions converted")
+        # Write per-style metadata
+        with open(style_out / "metadata.jsonl", "w", encoding="utf-8") as f:
+            for entry in style_metadata:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # Write combined metadata
-    with open(out_dir / "metadata.jsonl", "w", encoding="utf-8") as f:
+        print(f"  {style}: {len(style_metadata)} motions -> {style_out}")
+
+    # Write mixed (all styles combined)
+    mixed_dir = out_dir / "mixed"
+    mixed_motions = mixed_dir / "motions"
+    mixed_motions.mkdir(parents=True, exist_ok=True)
+
+    for style in STYLES:
+        style_lower = style.lower()
+        src_dir = out_dir / style_lower / "motions"
+        if not src_dir.exists():
+            continue
+        for npy in src_dir.glob("*.npy"):
+            import shutil
+            shutil.copy2(npy, mixed_motions / npy.name)
+
+    with open(mixed_dir / "metadata.jsonl", "w", encoding="utf-8") as f:
         for entry in all_metadata:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    print(f"\nTotal: {len(all_metadata)} motions saved to {out_dir}")
+    print(f"\nTotal: {len(all_metadata)} motions")
+    print(f"  Mixed -> {mixed_dir}")
 
     if not all_metadata:
         print("No data converted! Check 100STYLE directory structure.")
-        # Show what's in the directory
         print(f"\nContents of {style_dir}:")
         for item in sorted(style_dir.iterdir())[:20]:
             print(f"  {item.name}")
@@ -92,9 +119,14 @@ def main():
     hml_std_safe = hml_std.copy()
     hml_std_safe[hml_std_safe < 1e-5] = 1.0
 
-    # Load converted data
-    npy_files = sorted(motions_dir.glob("*.npy"))
-    all_data = np.concatenate([np.load(f) for f in npy_files], axis=0)
+    # Load all converted data
+    all_npy = []
+    for style in STYLES:
+        d = out_dir / style.lower() / "motions"
+        if d.exists():
+            all_npy.extend(sorted(d.glob("*.npy")))
+
+    all_data = np.concatenate([np.load(f) for f in all_npy], axis=0)
     normed = (all_data - hml_mean) / hml_std_safe
 
     # Load HumanML3D reference
@@ -103,12 +135,8 @@ def main():
     hml_data = np.concatenate([np.load(f) for f in hml_files], axis=0)
     hml_normed = (hml_data - hml_mean) / hml_std_safe
 
-    print(f"\n  Converted: {all_data.shape[0]} frames, {len(npy_files)} files")
+    print(f"\n  Converted: {all_data.shape[0]} frames, {len(all_npy)} files")
     print(f"  HumanML3D: {hml_data.shape[0]} frames, {len(hml_files)} files")
-
-    print(f"\n  --- Raw feature ranges ---")
-    print(f"  Converted:  [{all_data.min():.3f}, {all_data.max():.3f}]")
-    print(f"  HumanML3D:  [{hml_data.min():.3f}, {hml_data.max():.3f}]")
 
     print(f"\n  --- After HumanML3D normalization ---")
     print(f"  Converted:  [{normed.min():.1f}, {normed.max():.1f}]")
@@ -133,12 +161,6 @@ def main():
 
     pct_outside = (np.abs(normed) > 5).mean() * 100
     print(f"\n  Values outside [-5, 5]: {pct_outside:.1f}%")
-    if pct_outside < 2:
-        print("  GOOD: Compatible with HumanML3D normalization!")
-    elif pct_outside < 10:
-        print("  OK: Minor mismatch, should work with clipping.")
-    else:
-        print("  WARNING: Still significant mismatch.")
 
 
 if __name__ == "__main__":
