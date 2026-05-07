@@ -572,11 +572,51 @@ Modified `src/visualization/motion_viz.py` → `motion_features_to_positions()`:
 ### Files Changed
 - `src/visualization/motion_viz.py`: Added `_smooth_root_trajectory()`, `_enforce_bone_lengths()`, rewrote foot contact logic in `motion_features_to_positions()`
 
-### Potential Future Improvements (B approach — requires retraining)
-- Add weighted loss: higher weight on foot contact dims (259-262) and root velocity dims (0-2)
-- Lower lora_alpha from 16 to 8 or 4 to reduce deviation from base model
-- Add bone length consistency loss during training
-- Add root velocity regularization loss
+### Post-Processing Attempt: Failed
+
+Tried two rounds of post-processing changes to `motion_viz.py`:
+
+**Round 1** (soft pinning + root smoothing + bone length enforcement):
+- Soft pin alpha=0.8, height/velocity detection, bone enforcement after foot fix
+- Result: still sliding — soft pin too weak, bone enforcement undid foot fix
+
+**Round 2** (phase-based contact detection + hard locking + reordered steps):
+- Detect contiguous contact phases, lock foot to single XZ position per phase
+- Bone enforcement BEFORE foot fix, foot fix LAST
+- Result: **broke skeleton structure** — base model had stretched legs, LoRA had severe bone distortion
+- Root cause: modifying individual joint positions breaks the root-relative coordinate system that HumanML3D uses
+
+**Conclusion**: Post-processing approaches that modify joint positions directly are risky. The root-relative structure means moving foot/ankle positions creates inconsistencies with the rest of the skeleton. Reverted `motion_viz.py` to original version.
+
+---
+
+## Phase 15: Training-Level Fix — Foot Velocity Penalty (v2)
+
+### Approach
+Instead of post-processing, add an auxiliary loss during LoRA training:
+- When GT foot contact signal (dims 259-262) indicates grounded, penalize the predicted foot joint velocities (from dims 193-258)
+- This teaches the LoRA model to predict near-zero velocity for grounded feet, reducing sliding at the source
+- No post-processing needed — the model itself generates better motions
+
+### Implementation
+- `src/training/train_mdm_lora.py`: added `--foot_vel_weight` argument (default=0, backward compatible)
+- Loss addition: `foot_loss = sum of (velocity² * contact_mask)` for L_Ankle(7), L_Foot(10), R_Ankle(8), R_Foot(11)
+- Uses GT contact signal as supervision (not predicted contact)
+
+### Version Management
+- **v1 models preserved**: `/transfer/loraoutputs/models/lora_bvh_<style>/` (unchanged)
+- **v2 models output to**: `/transfer/loraoutputs/models/lora_bvh_<style>_v2/`
+- `generate_and_eval.py`: uses `LORA_VERSION=v2` env var to switch between v1/v2
+- `scripts/train_v2_foot_penalty.sh`: batch trains all 6 styles with `foot_vel_weight=2.0`
+
+### Usage
+```bash
+# Train v2
+bash scripts/train_v2_foot_penalty.sh
+
+# Generate with v2 models
+LORA_VERSION=v2 python scripts/generate_and_eval.py
+```
 
 ---
 
@@ -584,10 +624,11 @@ Modified `src/visualization/motion_viz.py` → `motion_features_to_positions()`:
 
 | Task | Status |
 |------|--------|
-| Generate + evaluate all 6 LoRAs | In progress |
-| Post-processing improvements | Done (Phase 14) |
-| Re-generate GIFs with improved post-processing | Next |
-| Quantitative metrics comparison | Not started |
+| Generate + evaluate all 6 LoRAs (v1) | Done |
+| Post-processing fix for foot sliding | Failed — reverted (Phase 14) |
+| Train v2 with foot velocity penalty | Ready to run |
+| Generate + evaluate v2 LoRAs | Not started |
+| Quantitative metrics comparison (v1 vs v2) | Not started |
 | MLD + LoRA training (comparison) | Not started |
 | Final visualisations for report | Not started |
 | Critical Reflective Paper | Not started |

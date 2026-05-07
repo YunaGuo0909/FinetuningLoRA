@@ -24,153 +24,6 @@ KINEMATIC_CHAINS = [
 CHAIN_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6"]
 
 
-def _smooth_root_trajectory(positions: np.ndarray, window: int = 7) -> np.ndarray:
-    """Smooth root XZ trajectory to reduce accumulated drift."""
-    T = positions.shape[0]
-    if T < window * 2:
-        return positions
-
-    root_vx = np.diff(positions[:, 0, 0])
-    root_vz = np.diff(positions[:, 0, 2])
-
-    kernel = np.ones(window) / window
-    root_vx_smooth = np.convolve(root_vx, kernel, mode='same')
-    root_vz_smooth = np.convolve(root_vz, kernel, mode='same')
-
-    new_root_x = np.cumsum(np.concatenate([[positions[0, 0, 0]], root_vx_smooth]))
-    new_root_z = np.cumsum(np.concatenate([[positions[0, 0, 2]], root_vz_smooth]))
-
-    dx = new_root_x - positions[:, 0, 0]
-    dz = new_root_z - positions[:, 0, 2]
-    positions[:, :, 0] += dx[:, None]
-    positions[:, :, 2] += dz[:, None]
-
-    return positions
-
-
-def _enforce_bone_lengths(positions: np.ndarray) -> np.ndarray:
-    """Enforce consistent bone lengths across all frames."""
-    T = positions.shape[0]
-    bone_pairs = []
-    for chain in KINEMATIC_CHAINS:
-        for i in range(len(chain) - 1):
-            bone_pairs.append((chain[i], chain[i + 1]))
-
-    all_lengths = np.zeros((T, len(bone_pairs)))
-    for t in range(T):
-        for b, (j1, j2) in enumerate(bone_pairs):
-            all_lengths[t, b] = np.linalg.norm(positions[t, j2] - positions[t, j1])
-
-    median_lengths = np.median(all_lengths, axis=0)
-
-    for t in range(T):
-        for chain in KINEMATIC_CHAINS:
-            for i in range(len(chain) - 1):
-                parent, child = chain[i], chain[i + 1]
-                b_idx = bone_pairs.index((parent, child))
-                target_len = median_lengths[b_idx]
-
-                direction = positions[t, child] - positions[t, parent]
-                current_len = np.linalg.norm(direction)
-                if current_len > 1e-6:
-                    positions[t, child] = (
-                        positions[t, parent] + direction * (target_len / current_len)
-                    )
-
-    return positions
-
-
-def _detect_contact_phases(contact_signal: np.ndarray, positions: np.ndarray,
-                           foot_idx: int, ankle_idx: int) -> list:
-    """Detect contiguous foot-contact phases using contact signal + height + velocity.
-
-    Returns list of (start, end) frame ranges where foot is grounded.
-    """
-    T = len(contact_signal)
-    grounded = np.zeros(T, dtype=bool)
-
-    for t in range(T):
-        by_signal = contact_signal[t] > 0.3
-        by_height = positions[t, foot_idx, 1] < 0.25
-        vel = np.linalg.norm(positions[t, foot_idx] - positions[max(0, t - 1), foot_idx]) if t > 0 else 0.0
-        by_vel = vel < 0.05
-        grounded[t] = by_signal or (by_height and by_vel)
-
-    # Merge short gaps (< 3 frames) between contact phases
-    for t in range(1, T - 1):
-        if not grounded[t] and grounded[t - 1] and any(grounded[t + 1:min(t + 4, T)]):
-            grounded[t] = True
-
-    # Extract contiguous phases
-    phases = []
-    in_phase = False
-    start = 0
-    for t in range(T):
-        if grounded[t] and not in_phase:
-            start = t
-            in_phase = True
-        elif not grounded[t] and in_phase:
-            if t - start >= 2:  # ignore single-frame contacts
-                phases.append((start, t))
-            in_phase = False
-    if in_phase and T - start >= 2:
-        phases.append((start, T))
-
-    return phases
-
-
-def _fix_foot_sliding(positions: np.ndarray, motion: np.ndarray) -> np.ndarray:
-    """Phase-based foot sliding fix.
-
-    For each detected contact phase, locks the foot to a single XZ position.
-    Smoothly blends at phase boundaries to avoid discontinuities.
-    """
-    T = positions.shape[0]
-    if motion.shape[1] < 263:
-        return positions
-
-    foot_contact = motion[:, 259:263]
-    l_contact = (foot_contact[:, 0] + foot_contact[:, 1]) / 2
-    r_contact = (foot_contact[:, 2] + foot_contact[:, 3]) / 2
-
-    blend_frames = 3  # frames to blend at phase boundaries
-
-    for contact, foot_j, ankle_j in [
-        (l_contact, 10, 7),
-        (r_contact, 11, 8),
-    ]:
-        phases = _detect_contact_phases(contact, positions, foot_j, ankle_j)
-
-        for start, end in phases:
-            # Lock foot XZ to the position at phase start
-            lock_x = positions[start, foot_j, 0]
-            lock_z = positions[start, foot_j, 2]
-            lock_ax = positions[start, ankle_j, 0]
-            lock_az = positions[start, ankle_j, 2]
-
-            for t in range(start, end):
-                # Compute blend weight: smooth transition at boundaries
-                if t < start + blend_frames:
-                    w = (t - start) / blend_frames
-                elif t > end - blend_frames - 1:
-                    w = (end - 1 - t) / blend_frames
-                else:
-                    w = 1.0
-                w = max(0.0, min(1.0, w))
-
-                # Blend between original and locked position
-                positions[t, foot_j, 0] = w * lock_x + (1 - w) * positions[t, foot_j, 0]
-                positions[t, foot_j, 2] = w * lock_z + (1 - w) * positions[t, foot_j, 2]
-                positions[t, ankle_j, 0] = w * lock_ax + (1 - w) * positions[t, ankle_j, 0]
-                positions[t, ankle_j, 2] = w * lock_az + (1 - w) * positions[t, ankle_j, 2]
-
-                # Also clamp foot height to ground during contact
-                if w > 0.5:
-                    positions[t, foot_j, 1] = min(positions[t, foot_j, 1], 0.05)
-
-    return positions
-
-
 def motion_features_to_positions(motion: np.ndarray) -> np.ndarray:
     """Extract joint positions from HumanML3D 263-dim features.
 
@@ -194,16 +47,31 @@ def motion_features_to_positions(motion: np.ndarray) -> np.ndarray:
             offset = 4 + (j - 1) * 3
             positions[t, j] = positions[t, 0] + motion[t, offset:offset + 3]
 
-    # Step 1: Root trajectory smoothing (reduces drift/turning)
-    positions = _smooth_root_trajectory(positions, window=7)
+    # Foot contact-based sliding reduction
+    # HumanML3D dims 259-262: left heel, left toe, right heel, right toe
+    # Foot joints: 10 (L_Foot), 11 (R_Foot)
+    if motion.shape[1] >= 263:
+        foot_contact = motion[:, 259:263]  # (T, 4)
+        l_contact = (foot_contact[:, 0] + foot_contact[:, 1]) / 2  # left foot
+        r_contact = (foot_contact[:, 2] + foot_contact[:, 3]) / 2  # right foot
 
-    # Step 2: Bone length enforcement FIRST (before foot fix)
-    positions = _enforce_bone_lengths(positions)
+        threshold = 0.5
+        for t in range(1, T):
+            if l_contact[t] > threshold:
+                # Pin left foot XZ to previous frame
+                positions[t, 10, 0] = positions[t - 1, 10, 0]
+                positions[t, 10, 2] = positions[t - 1, 10, 2]
+                # Also pin ankle
+                positions[t, 7, 0] = positions[t - 1, 7, 0]
+                positions[t, 7, 2] = positions[t - 1, 7, 2]
+            if r_contact[t] > threshold:
+                positions[t, 11, 0] = positions[t - 1, 11, 0]
+                positions[t, 11, 2] = positions[t - 1, 11, 2]
+                positions[t, 8, 0] = positions[t - 1, 8, 0]
+                positions[t, 8, 2] = positions[t - 1, 8, 2]
 
-    # Step 3: Phase-based foot sliding fix LAST (so bone enforcement doesn't undo it)
-    positions = _fix_foot_sliding(positions, motion)
-
-    # Step 4: Fix root visual position
+    # Fix root visual position: place pelvis at midpoint of hips
+    # to avoid the "extra bone" artifact between legs
     for t in range(T):
         positions[t, 0] = (positions[t, 1] + positions[t, 2]) / 2
 

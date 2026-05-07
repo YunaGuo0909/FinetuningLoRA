@@ -63,6 +63,10 @@ def parse_args():
     p.add_argument("--beta_schedule", type=str, default="cosine")
     p.add_argument("--snr_gamma", type=float, default=5.0)
 
+    # Auxiliary losses
+    p.add_argument("--foot_vel_weight", type=float, default=0.0,
+                   help="Weight for foot velocity penalty during contact (0=disabled)")
+
     # Training
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--learning_rate", type=float, default=1e-4)
@@ -199,6 +203,38 @@ def main():
                 valid_mask = y["mask"].float()  # (B, 1, 1, T)
                 loss_per_elem = (pred_x0 - x_0) ** 2 * valid_mask
                 loss = loss_per_elem.sum() / valid_mask.sum().clamp(min=1) / x_0.shape[1]
+
+                # Foot velocity penalty: penalize foot joint velocity when contact=1
+                # pred_x0 shape: (B, 263, 1, T). We work on the (B, T, 263) view.
+                if args.foot_vel_weight > 0:
+                    pred_motion = pred_x0.squeeze(2).permute(0, 2, 1)  # (B, T, 263)
+                    gt_motion = x_0.squeeze(2).permute(0, 2, 1)
+
+                    # Foot contact from GT: dims 259-262 (l_heel, l_toe, r_heel, r_toe)
+                    gt_contact = gt_motion[:, :, 259:263]  # (B, T, 4)
+                    l_contact = (gt_contact[:, :, 0] + gt_contact[:, :, 1]) / 2  # (B, T)
+                    r_contact = (gt_contact[:, :, 2] + gt_contact[:, :, 3]) / 2
+
+                    # Foot joint velocities from predicted x0
+                    # Joint velocities: dims 193-258 (22 joints * 3)
+                    # L_Ankle=7, R_Ankle=8, L_Foot=10, R_Foot=11
+                    pred_vel = pred_motion[:, :, 193:259]  # (B, T, 66)
+                    l_ankle_vel = pred_vel[:, :, 7*3:7*3+3]   # (B, T, 3)
+                    l_foot_vel  = pred_vel[:, :, 10*3:10*3+3]
+                    r_ankle_vel = pred_vel[:, :, 8*3:8*3+3]
+                    r_foot_vel  = pred_vel[:, :, 11*3:11*3+3]
+
+                    # When contact > 0.5, velocity should be ~0
+                    l_mask = (l_contact > 0.5).float().unsqueeze(-1)  # (B, T, 1)
+                    r_mask = (r_contact > 0.5).float().unsqueeze(-1)
+
+                    foot_loss = (
+                        (l_ankle_vel ** 2 * l_mask).mean() +
+                        (l_foot_vel ** 2 * l_mask).mean() +
+                        (r_ankle_vel ** 2 * r_mask).mean() +
+                        (r_foot_vel ** 2 * r_mask).mean()
+                    )
+                    loss = loss + args.foot_vel_weight * foot_loss
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
