@@ -170,7 +170,7 @@ def main():
     print("=" * 60)
 
     evaluator = MotionEvaluator(mean, std)
-    all_eval = {"base_model": evaluator.evaluate(base_motions)}
+    all_eval = {"base_model": evaluator.evaluate_batch(base_motions)}
 
     for style_name, motions in lora_results.items():
         results = evaluator.compare_base_vs_lora(base_motions, motions)
