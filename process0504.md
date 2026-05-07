@@ -1,4 +1,4 @@
-# Project Progress Log - 2026.05.04
+# Project Progress Log - 2026.05.04 ~ 05.07
 
 ## Project Overview
 
@@ -392,7 +392,132 @@ Values outside [-5, 5]: 8.5% (down from ~50% with identity rotations)
 | v2 | 100STYLE BVH (identity rotations) | Self-computed | Trained but no effect at inference (space mismatch) |
 | v3 | 100STYLE BVH (identity rotations) | HumanML3D + clip [-5,5] | Weak effect, 10.4% clipped |
 | v4 | HumanML3D filtered by captions | HumanML3D (native) | Trained but base already knows these styles |
-| **v5** | **100STYLE BVH (real rotations)** | **HumanML3D + clip [-5,5]** | **In progress — 8.5% clip, rotations aligned** |
+| **v5** | **100STYLE BVH (real rotations)** | **HumanML3D + clip [-5,5]** | **Mixed 5 styles → weak effect (see Phase 11)** |
+| **v6 (HML filtered)** | **HumanML3D filtered by captions** | **HumanML3D (native)** | **No effect — data already in pre-training distribution** |
+| **v7 (per-style BVH)** | **100STYLE BVH per-style** | **HumanML3D + clip [-5,5]** | **Visible style differences (see Phase 13)** |
+
+---
+
+## Phase 11: Training v5 with Fixed BVH Data (Mixed Styles)
+
+### Training
+- Data: `/transfer/loradataset/style_converted_v2/` (40 motions, 5 styles mixed)
+- Config: 3000 steps, lr=1e-4, batch_size=64, cosine schedule
+- Loss converged normally
+
+### Generation Results
+- Generated with generic prompts ("a person walking forward", etc.)
+- Base vs LoRA comparison: **slight difference visible** (LoRA output had different range)
+- Value ranges: Base [-17.0, 10.5], LoRA [-11.3, 10.1]
+- But visual difference was weak — mixing 5 styles diluted the style signal
+
+### Skeleton Visualization Issue
+- All skeletons (base and LoRA) showed an **extra bone between the legs** — a point hanging below the crotch area
+- **Cause**: Root joint (pelvis, joint 0) positioned lower than hip joints (1, 2), creating a downward triangle
+- **Fix**: Set root position to midpoint of hip joints in `motion_features_to_positions()`:
+  ```python
+  for t in range(T):
+      positions[t, 0] = (positions[t, 1] + positions[t, 2]) / 2
+  ```
+- Result: skeleton looks correct after fix
+
+---
+
+## Phase 12: HumanML3D Filtered Experiment (v6) — Failed
+
+### Hypothesis
+Use HumanML3D data filtered by style keywords (e.g. "old", "angry", "drunk") — larger dataset (2974 motions), no normalization issues.
+
+### Setup
+- `scripts/filter_style_data.py` modified to output per-style directories:
+  ```
+  style_filtered/old/motions/ + metadata.jsonl
+  style_filtered/angry/motions/ + metadata.jsonl
+  ...
+  style_filtered/mixed/motions/ + metadata.jsonl
+  ```
+- Trained 5 single-style LoRAs: old, angry, drunk, happy, mixed
+- Config: 3000 steps, lr=1e-4
+
+### Results
+| Style | Value Range | Observation |
+|-------|------------|-------------|
+| Base | [-17.0, 10.5] | Normal |
+| old | [-11.3, 10.1] | Almost identical to base |
+| angry | [-72.5, 45.3] | **Exploded** — severely overfitted/diverged |
+| drunk | [-11.3, 11.2] | Almost identical to base |
+| happy | [-23.6, 14.7] | Slight difference |
+| mixed | [-14.3, 8.6] | Almost identical to base |
+
+### Why It Failed
+**The HumanML3D filtered data is a SUBSET of MDM's pre-training data.** The base model has already been trained on ALL HumanML3D motions, including those labeled "old" or "drunk". Fine-tuning LoRA on data the model already knows teaches it nothing new.
+
+**Analogy**: Asking someone who already read the whole book to re-read one chapter — their knowledge doesn't change.
+
+**Key Lesson**: LoRA needs **external data** (different distribution from pre-training) to be effective. 100STYLE BVH data is genuinely new to the model.
+
+---
+
+## Phase 13: Per-Style 100STYLE Training (v7) — Current
+
+### Design Changes
+1. **Per-style directories**: `reconvert_and_check.py` now outputs per-style:
+   ```
+   style_bvh/zombie/motions/ + metadata.jsonl
+   style_bvh/elated/motions/ + metadata.jsonl
+   style_bvh/old/motions/ + metadata.jsonl
+   style_bvh/depressed/motions/ + metadata.jsonl
+   style_bvh/drunk/motions/ + metadata.jsonl
+   style_bvh/mixed/motions/ + metadata.jsonl
+   ```
+
+2. **Improved hyperparameters**:
+   - Steps: 3000 → **5000** (more epochs for small dataset)
+   - Learning rate: 1e-4 → **2e-4** (stronger LoRA updates)
+   - Cosine LR schedule with 100-step warmup
+
+3. **Multi-LoRA generation**: `generate_and_eval.py` now loads and compares all trained LoRAs against base model in one run
+
+### Training Results (all 6 LoRAs)
+
+| Style | Data Size | Final Loss | Training Time |
+|-------|-----------|------------|---------------|
+| zombie | 8 motions | 0.170 | ~10 min |
+| elated | 8 motions | 0.233 | ~10 min |
+| old | 8 motions | 0.122 | ~10 min |
+| depressed | 8 motions | 0.215 | ~10 min |
+| drunk | 8 motions | 0.244 | ~10 min |
+| mixed | 40 motions | 0.172 | ~17 min |
+
+All losses converged smoothly. Lower loss (old: 0.122) suggests the style is closer to HumanML3D distribution; higher loss (drunk: 0.244) suggests more divergence (which is expected for extreme styles).
+
+### Initial Visual Results (zombie)
+- **Base vs LoRA-zombie shows visible difference**: LoRA skeleton has lower center of gravity, more compact posture — consistent with zombie style
+- Skeleton extra bone issue resolved
+- Mild foot sliding present (common in diffusion motion generation, noted as limitation)
+
+### Evaluator Bug Fix
+- `generate_and_eval.py` called `evaluator.evaluate()` which didn't exist
+- **Fix**: Changed to `evaluator.evaluate_batch()` (the actual method name in `evaluator.py`)
+
+### Awaiting
+- Full multi-style generation results (all 6 LoRAs)
+- Quantitative evaluation comparison
+- Final visualizations
+
+---
+
+## Phase Summary
+
+| Version | Data Source | Normalization | Result |
+|---------|-----------|---------------|--------|
+| v1 | 100STYLE BVH (identity rotations) | Self-computed | NaN loss |
+| v2 | 100STYLE BVH (identity rotations) | Self-computed | Trained but no effect at inference (space mismatch) |
+| v3 | 100STYLE BVH (identity rotations) | HumanML3D + clip [-5,5] | Weak effect, 10.4% clipped |
+| v4 | HumanML3D filtered by captions | HumanML3D (native) | Trained but base already knows these styles |
+| v5 | 100STYLE BVH (real rotations, mixed) | HumanML3D + clip [-5,5] | Slight difference, diluted by mixing 5 styles |
+| v6 | HumanML3D filtered (per-style) | HumanML3D (native) | **No effect** — subset of pre-training data |
+| **v7** | **100STYLE BVH (per-style)** | **HumanML3D + clip [-5,5]** | **Visible style differences with zombie** |
 
 ---
 
@@ -400,8 +525,8 @@ Values outside [-5, 5]: 8.5% (down from ~50% with identity rotations)
 
 | Task | Status |
 |------|--------|
-| Train style_lora_v5 (fixed BVH data) | In progress |
-| Generate + evaluate (generic prompts) | Not started |
+| Generate + evaluate all 6 LoRAs | In progress |
+| Quantitative metrics comparison | Not started |
 | MLD + LoRA training (comparison) | Not started |
 | Final visualisations for report | Not started |
 | Critical Reflective Paper | Not started |
