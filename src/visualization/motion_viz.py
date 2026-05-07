@@ -24,6 +24,81 @@ KINEMATIC_CHAINS = [
 CHAIN_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6"]
 
 
+def _smooth_root_trajectory(positions: np.ndarray, window: int = 5) -> np.ndarray:
+    """Smooth root XZ trajectory to reduce accumulated drift.
+
+    Uses a simple moving average on root XZ velocity, then re-integrates.
+    This suppresses the small per-frame errors that cause unwanted turning/drift.
+    """
+    T = positions.shape[0]
+    if T < window * 2:
+        return positions
+
+    # Extract root XZ velocities
+    root_vx = np.diff(positions[:, 0, 0])  # (T-1,)
+    root_vz = np.diff(positions[:, 0, 2])  # (T-1,)
+
+    # Smooth velocities with moving average
+    kernel = np.ones(window) / window
+    root_vx_smooth = np.convolve(root_vx, kernel, mode='same')
+    root_vz_smooth = np.convolve(root_vz, kernel, mode='same')
+
+    # Re-integrate smoothed velocities
+    new_root_x = np.zeros(T)
+    new_root_z = np.zeros(T)
+    new_root_x[0] = positions[0, 0, 0]
+    new_root_z[0] = positions[0, 0, 2]
+    for t in range(1, T):
+        new_root_x[t] = new_root_x[t - 1] + root_vx_smooth[t - 1]
+        new_root_z[t] = new_root_z[t - 1] + root_vz_smooth[t - 1]
+
+    # Apply offset to all joints (shift entire skeleton)
+    dx = new_root_x - positions[:, 0, 0]
+    dz = new_root_z - positions[:, 0, 2]
+    positions[:, :, 0] += dx[:, None]
+    positions[:, :, 2] += dz[:, None]
+
+    return positions
+
+
+def _enforce_bone_lengths(positions: np.ndarray) -> np.ndarray:
+    """Enforce consistent bone lengths across all frames.
+
+    Computes median bone length from all frames, then rescales each bone
+    to match. This prevents the skeleton from shrinking/growing.
+    """
+    T = positions.shape[0]
+    bone_pairs = []
+    for chain in KINEMATIC_CHAINS:
+        for i in range(len(chain) - 1):
+            bone_pairs.append((chain[i], chain[i + 1]))
+
+    # Compute median bone lengths
+    all_lengths = np.zeros((T, len(bone_pairs)))
+    for t in range(T):
+        for b, (j1, j2) in enumerate(bone_pairs):
+            all_lengths[t, b] = np.linalg.norm(positions[t, j2] - positions[t, j1])
+
+    median_lengths = np.median(all_lengths, axis=0)
+
+    # Rescale bones from root outward
+    for t in range(T):
+        for chain in KINEMATIC_CHAINS:
+            for i in range(len(chain) - 1):
+                parent, child = chain[i], chain[i + 1]
+                b_idx = bone_pairs.index((parent, child))
+                target_len = median_lengths[b_idx]
+
+                direction = positions[t, child] - positions[t, parent]
+                current_len = np.linalg.norm(direction)
+                if current_len > 1e-6:
+                    positions[t, child] = (
+                        positions[t, parent] + direction * (target_len / current_len)
+                    )
+
+    return positions
+
+
 def motion_features_to_positions(motion: np.ndarray) -> np.ndarray:
     """Extract joint positions from HumanML3D 263-dim features.
 
@@ -47,31 +122,50 @@ def motion_features_to_positions(motion: np.ndarray) -> np.ndarray:
             offset = 4 + (j - 1) * 3
             positions[t, j] = positions[t, 0] + motion[t, offset:offset + 3]
 
-    # Foot contact-based sliding reduction
-    # HumanML3D dims 259-262: left heel, left toe, right heel, right toe
-    # Foot joints: 10 (L_Foot), 11 (R_Foot)
+    # --- Post-processing: root trajectory smoothing ---
+    positions = _smooth_root_trajectory(positions, window=5)
+
+    # --- Post-processing: improved foot sliding reduction ---
+    # Uses both foot contact signal AND velocity/height heuristics
     if motion.shape[1] >= 263:
         foot_contact = motion[:, 259:263]  # (T, 4)
-        l_contact = (foot_contact[:, 0] + foot_contact[:, 1]) / 2  # left foot
-        r_contact = (foot_contact[:, 2] + foot_contact[:, 3]) / 2  # right foot
+        l_contact = (foot_contact[:, 0] + foot_contact[:, 1]) / 2
+        r_contact = (foot_contact[:, 2] + foot_contact[:, 3]) / 2
 
-        threshold = 0.5
+        # Also detect contact from height + velocity (backup when contact signal is noisy)
+        # Foot joints: 7=L_Ankle, 8=R_Ankle, 10=L_Foot, 11=R_Foot
+        height_thresh = 0.15
+        vel_thresh = 0.02
         for t in range(1, T):
-            if l_contact[t] > threshold:
-                # Pin left foot XZ to previous frame
-                positions[t, 10, 0] = positions[t - 1, 10, 0]
-                positions[t, 10, 2] = positions[t - 1, 10, 2]
-                # Also pin ankle
-                positions[t, 7, 0] = positions[t - 1, 7, 0]
-                positions[t, 7, 2] = positions[t - 1, 7, 2]
-            if r_contact[t] > threshold:
-                positions[t, 11, 0] = positions[t - 1, 11, 0]
-                positions[t, 11, 2] = positions[t - 1, 11, 2]
-                positions[t, 8, 0] = positions[t - 1, 8, 0]
-                positions[t, 8, 2] = positions[t - 1, 8, 2]
+            # Left foot: combine contact signal with height/velocity check
+            l_height_ok = positions[t, 10, 1] < height_thresh
+            l_vel = np.linalg.norm(positions[t, 10] - positions[t - 1, 10])
+            l_vel_ok = l_vel < vel_thresh
+            l_grounded = l_contact[t] > 0.5 or (l_height_ok and l_vel_ok)
+
+            # Right foot
+            r_height_ok = positions[t, 11, 1] < height_thresh
+            r_vel = np.linalg.norm(positions[t, 11] - positions[t - 1, 11])
+            r_vel_ok = r_vel < vel_thresh
+            r_grounded = r_contact[t] > 0.5 or (r_height_ok and r_vel_ok)
+
+            if l_grounded:
+                # Blend toward pinned position (soft pin) instead of hard snap
+                alpha = 0.8
+                for j in [10, 7]:  # foot and ankle
+                    positions[t, j, 0] = alpha * positions[t - 1, j, 0] + (1 - alpha) * positions[t, j, 0]
+                    positions[t, j, 2] = alpha * positions[t - 1, j, 2] + (1 - alpha) * positions[t, j, 2]
+
+            if r_grounded:
+                alpha = 0.8
+                for j in [11, 8]:
+                    positions[t, j, 0] = alpha * positions[t - 1, j, 0] + (1 - alpha) * positions[t, j, 0]
+                    positions[t, j, 2] = alpha * positions[t - 1, j, 2] + (1 - alpha) * positions[t, j, 2]
+
+    # --- Post-processing: enforce bone lengths ---
+    positions = _enforce_bone_lengths(positions)
 
     # Fix root visual position: place pelvis at midpoint of hips
-    # to avoid the "extra bone" artifact between legs
     for t in range(T):
         positions[t, 0] = (positions[t, 1] + positions[t, 2]) / 2
 

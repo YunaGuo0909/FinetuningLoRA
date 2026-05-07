@@ -521,11 +521,72 @@ All losses converged smoothly. Lower loss (old: 0.122) suggests the style is clo
 
 ---
 
+## Phase 14: Post-Processing Improvements for Foot Sliding & Drift
+
+### Problem Analysis (from generated GIFs in `outputs/generated/`)
+
+Reviewed all 15 comparison GIFs (base vs LoRA for 5 prompts x multiple styles). Three issues identified:
+
+1. **Foot Sliding (滑步)**: LoRA outputs have significantly more foot sliding than base model. Feet glide on the ground instead of planting firmly. Most visible in "walking and then stop" and "stepping sideways" prompts.
+
+2. **Unwanted Turning/Drift (转向)**: Some LoRA outputs show the character rotating or drifting in unexpected directions. Root cause: root XZ velocity (dims 1-2) errors accumulate over 196 frames during integration in `motion_features_to_positions()`.
+
+3. **Skeleton Shrinking**: LoRA outputs are noticeably shorter/smaller than base model (~1 unit shorter in Y axis). Likely caused by LoRA over-adjusting root-relative joint positions (dims 4-66) or lora_alpha being too aggressive (alpha=rank=16, effective scaling=1.0).
+
+### Root Cause Analysis
+
+**Training level** (not addressed yet):
+- Training loss is plain MSE on all 263 dims equally — no extra weight on foot contact (dims 259-262) or root velocity (dims 0-2)
+- LoRA rank=16, alpha=16 → scaling factor 1.0, may be too aggressive for small datasets (8 motions per style)
+- No velocity consistency or bone length regularization loss
+
+**Post-processing level** (addressed in this phase):
+- Old foot contact pinning was binary hard-snap (contact > 0.5 → pin XZ to previous frame)
+- No root trajectory smoothing → velocity errors accumulated freely
+- No bone length enforcement → skeleton could shrink/stretch
+
+### Solution: Enhanced Post-Processing (A approach — no retraining needed)
+
+Modified `src/visualization/motion_viz.py` → `motion_features_to_positions()`:
+
+#### 1. Root Trajectory Smoothing (`_smooth_root_trajectory`)
+- Extracts root XZ velocity, applies moving average (window=5)
+- Re-integrates smoothed velocities → suppresses accumulated drift/turning
+- Shifts entire skeleton to match smoothed root path
+
+#### 2. Improved Foot Sliding Reduction
+- **Dual detection**: uses BOTH foot contact signal (dims 259-262) AND height+velocity heuristics
+  - Height threshold: foot Y < 0.15m
+  - Velocity threshold: foot displacement < 0.02m/frame
+  - Either contact signal OR (low height AND low velocity) triggers grounding
+- **Soft pinning** instead of hard snap: `alpha=0.8` blend toward previous position
+  - `new_pos = 0.8 * prev_pos + 0.2 * current_pos`
+  - Avoids jarring discontinuities while still reducing sliding
+- Pins both foot (joint 10/11) and ankle (joint 7/8)
+
+#### 3. Bone Length Enforcement (`_enforce_bone_lengths`)
+- Computes median bone length across all frames for each bone segment
+- Rescales each bone to match median length, walking outward from root along kinematic chains
+- Prevents skeleton from shrinking or stretching across frames
+
+### Files Changed
+- `src/visualization/motion_viz.py`: Added `_smooth_root_trajectory()`, `_enforce_bone_lengths()`, rewrote foot contact logic in `motion_features_to_positions()`
+
+### Potential Future Improvements (B approach — requires retraining)
+- Add weighted loss: higher weight on foot contact dims (259-262) and root velocity dims (0-2)
+- Lower lora_alpha from 16 to 8 or 4 to reduce deviation from base model
+- Add bone length consistency loss during training
+- Add root velocity regularization loss
+
+---
+
 ## Remaining Tasks
 
 | Task | Status |
 |------|--------|
 | Generate + evaluate all 6 LoRAs | In progress |
+| Post-processing improvements | Done (Phase 14) |
+| Re-generate GIFs with improved post-processing | Next |
 | Quantitative metrics comparison | Not started |
 | MLD + LoRA training (comparison) | Not started |
 | Final visualisations for report | Not started |
