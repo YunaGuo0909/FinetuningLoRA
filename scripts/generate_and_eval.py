@@ -34,13 +34,13 @@ from src.visualization.motion_viz import (
 
 CHECKPOINT_DIR = "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512"
 HML3D_DIR = "/transfer/loradataset/humanml3d"
-OUTPUT_DIR = f"/transfer/loraoutputs/eval/multi_style{'_v2' if _LORA_VER == 'v2' else ''}"
 
-# LoRA models to compare (100STYLE BVH data)
 # Set LORA_VERSION="v2" env var to use v2 models (with foot velocity penalty)
 import os
 _LORA_VER = os.environ.get("LORA_VERSION", "v1")
 _SUFFIX = "_v2" if _LORA_VER == "v2" else ""
+
+OUTPUT_DIR = f"/transfer/loraoutputs/eval/multi_style{_SUFFIX}"
 LORA_MODELS = {
     "zombie":    f"/transfer/loraoutputs/models/lora_bvh_zombie{_SUFFIX}/final",
     "elated":    f"/transfer/loraoutputs/models/lora_bvh_elated{_SUFFIX}/final",
