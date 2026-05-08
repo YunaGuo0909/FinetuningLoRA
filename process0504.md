@@ -618,6 +618,39 @@ bash scripts/train_v2_foot_penalty.sh
 LORA_VERSION=v2 python scripts/generate_and_eval.py
 ```
 
+### v2 Results
+- Trained and generated all 6 styles
+- Foot sliding: marginal improvement, hard to tell from static frames
+- **Skeleton shrinking still severe**: LoRA output ~60% height of base (Y: 1.5-2.0 vs 2.5-3.0)
+- Root cause: `lora_alpha=16` (same as rank) → scaling factor 1.0, too aggressive. LoRA learns the compressed joint position scale from BVH data and applies it at full strength
+
+---
+
+## Phase 16: Lower Alpha (v3) — alpha=8
+
+### Rationale
+The skeleton shrinking is the dominant visual issue. It's caused by LoRA scaling factor being too high (alpha/rank = 16/16 = 1.0). Lowering alpha to 8 (scaling = 8/16 = 0.5) halves the LoRA's influence on the base model. This should preserve body proportions while still applying style.
+
+### Changes
+| Item | v1 | v2 | v3 |
+|------|----|----|-----|
+| `lora_alpha` | 16 | 16 | **8** |
+| `foot_vel_weight` | 0 | 2.0 | 2.0 |
+| Output dir suffix | (none) | `_v2` | `_v3` |
+
+### Files Changed
+- `scripts/train_v3_low_alpha.sh`: new training script, only change is `--lora_alpha 8`
+- `scripts/generate_and_eval.py`: `_SUFFIX` now supports v1/v2/v3 via dict lookup
+
+### Usage
+```bash
+# Train v3
+bash scripts/train_v3_low_alpha.sh
+
+# Generate with v3 models
+LORA_VERSION=v3 python scripts/generate_and_eval.py
+```
+
 ---
 
 ## Remaining Tasks
@@ -626,9 +659,9 @@ LORA_VERSION=v2 python scripts/generate_and_eval.py
 |------|--------|
 | Generate + evaluate all 6 LoRAs (v1) | Done |
 | Post-processing fix for foot sliding | Failed — reverted (Phase 14) |
-| Train v2 with foot velocity penalty | Ready to run |
-| Generate + evaluate v2 LoRAs | Not started |
-| Quantitative metrics comparison (v1 vs v2) | Not started |
+| Train + evaluate v2 (foot penalty) | Done — shrinking still severe |
+| Train + evaluate v3 (low alpha) | Ready to run |
+| Quantitative metrics comparison | Not started |
 | MLD + LoRA training (comparison) | Not started |
 | Final visualisations for report | Not started |
 | Critical Reflective Paper | Not started |

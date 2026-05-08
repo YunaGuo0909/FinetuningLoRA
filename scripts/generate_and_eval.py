@@ -35,10 +35,10 @@ from src.visualization.motion_viz import (
 CHECKPOINT_DIR = "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512"
 HML3D_DIR = "/transfer/loradataset/humanml3d"
 
-# Set LORA_VERSION="v2" env var to use v2 models (with foot velocity penalty)
+# Set LORA_VERSION env var: "v1" (default), "v2" (foot penalty), "v3" (low alpha + foot penalty)
 import os
 _LORA_VER = os.environ.get("LORA_VERSION", "v1")
-_SUFFIX = "_v2" if _LORA_VER == "v2" else ""
+_SUFFIX = {"v1": "", "v2": "_v2", "v3": "_v3"}.get(_LORA_VER, "")
 
 OUTPUT_DIR = f"/transfer/loraoutputs/eval/multi_style{_SUFFIX}"
 LORA_MODELS = {
