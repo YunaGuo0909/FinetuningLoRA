@@ -209,23 +209,37 @@ def rotation_matrix_to_6d(R: np.ndarray) -> np.ndarray:
     return np.concatenate([R[:, 0], R[:, 1]])  # (6,)
 
 
-def compute_foot_contacts(positions_seq: np.ndarray, threshold: float = 0.05) -> np.ndarray:
-    """Detect foot contacts from joint height and velocity.
+def compute_foot_contacts(positions_seq: np.ndarray,
+                          height_threshold: float = 0.05,
+                          velocity_threshold: float = 0.01) -> np.ndarray:
+    """Detect foot contacts from joint height AND velocity.
+
+    Contact = (foot height < threshold) AND (foot XZ velocity < threshold).
+    This avoids false positives when the foot passes through low height at speed.
 
     Args:
         positions_seq: (T, n_joints, 3) global joint positions
-        threshold: height threshold for contact
+        height_threshold: max height (Y) for contact
+        velocity_threshold: max XZ speed for contact
     Returns:
         (T, 4) binary contacts [l_ankle, l_foot, r_ankle, r_foot]
     """
     T = positions_seq.shape[0]
     contacts = np.zeros((T, 4))
 
+    foot_joints = [L_ANKLE_IDX, L_FOOT_IDX, R_ANKLE_IDX, R_FOOT_IDX]
+
     for t in range(T):
-        contacts[t, 0] = positions_seq[t, L_ANKLE_IDX, 1] < threshold  # y-axis = up
-        contacts[t, 1] = positions_seq[t, L_FOOT_IDX, 1] < threshold
-        contacts[t, 2] = positions_seq[t, R_ANKLE_IDX, 1] < threshold
-        contacts[t, 3] = positions_seq[t, R_FOOT_IDX, 1] < threshold
+        for i, j in enumerate(foot_joints):
+            height_ok = positions_seq[t, j, 1] < height_threshold
+            if t > 0:
+                dx = positions_seq[t, j, 0] - positions_seq[t - 1, j, 0]
+                dz = positions_seq[t, j, 2] - positions_seq[t - 1, j, 2]
+                vel = np.sqrt(dx * dx + dz * dz)
+                vel_ok = vel < velocity_threshold
+            else:
+                vel_ok = True  # first frame: assume contact if low
+            contacts[t, i] = float(height_ok and vel_ok)
 
     return contacts
 

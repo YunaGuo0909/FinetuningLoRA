@@ -38,7 +38,7 @@ HML3D_DIR = "/transfer/loradataset/humanml3d"
 # Set LORA_VERSION env var: "v1" (default), "v2" (foot penalty), "v3" (low alpha + foot penalty)
 import os
 _LORA_VER = os.environ.get("LORA_VERSION", "v1")
-_SUFFIX = {"v1": "", "v2": "_v2", "v3": "_v3"}.get(_LORA_VER, "")
+_SUFFIX = {"v1": "", "v2": "_v2", "v3": "_v3", "v4": "_v4"}.get(_LORA_VER, "")
 
 OUTPUT_DIR = f"/transfer/loraoutputs/eval/multi_style{_SUFFIX}"
 LORA_MODELS = {

@@ -66,6 +66,8 @@ def parse_args():
     # Auxiliary losses
     p.add_argument("--foot_vel_weight", type=float, default=0.0,
                    help="Weight for foot velocity penalty during contact (0=disabled)")
+    p.add_argument("--root_stable_weight", type=float, default=0.0,
+                   help="Weight for root XZ velocity smoothness during dual contact (0=disabled)")
 
     # Training
     p.add_argument("--batch_size", type=int, default=64)
@@ -235,6 +237,27 @@ def main():
                         (r_foot_vel ** 2 * r_mask).mean()
                     )
                     loss = loss + args.foot_vel_weight * foot_loss
+
+                # Root stability penalty: when both feet are in contact,
+                # penalize root XZ velocity (dims 1-2) to reduce whole-body drift.
+                if args.root_stable_weight > 0:
+                    pred_motion = pred_x0.squeeze(2).permute(0, 2, 1) if args.foot_vel_weight == 0 else pred_motion
+                    gt_motion = x_0.squeeze(2).permute(0, 2, 1) if args.foot_vel_weight == 0 else gt_motion
+
+                    gt_contact = gt_motion[:, :, 259:263]  # (B, T, 4)
+                    l_contact = (gt_contact[:, :, 0] + gt_contact[:, :, 1]) / 2
+                    r_contact = (gt_contact[:, :, 2] + gt_contact[:, :, 3]) / 2
+                    dual_mask = ((l_contact > 0.5) & (r_contact > 0.5)).float()  # (B, T)
+
+                    # Root XZ velocity: dims 1 and 2 of predicted x0
+                    pred_root_vx = pred_motion[:, :, 1]  # (B, T)
+                    pred_root_vz = pred_motion[:, :, 2]  # (B, T)
+
+                    root_loss = (
+                        (pred_root_vx ** 2 * dual_mask).mean() +
+                        (pred_root_vz ** 2 * dual_mask).mean()
+                    )
+                    loss = loss + args.root_stable_weight * root_loss
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
