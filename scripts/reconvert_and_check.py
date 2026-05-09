@@ -33,7 +33,7 @@ STYLES = [
     # --- Exaggerated / performative ---
     "HighKnees", "FairySteps", "Flapping", "KarateChop",
     # --- Asymmetric / constrained ---
-    "DragLeftLeg", "HandsInPockets", "Sneaky",
+    "DragLeftLeg", "HandsInPockets", "Robot",
 ]
 
 

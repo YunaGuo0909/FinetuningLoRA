@@ -15,7 +15,7 @@ HUMANML3D_DIR="/transfer/loradataset/humanml3d"
 BASE_STYLE_DIR="/transfer/loradataset/style_bvh"
 OUTPUT_BASE="/transfer/loraoutputs/models"
 
-STYLES="zombie elated old depressed drunk angry chicken cat dinosaur heavyset bentknees crouched bigsteps highknees fairysteps flapping karatechop dragleftleg handsinpockets sneaky mixed"
+STYLES="zombie elated old depressed drunk angry chicken cat dinosaur heavyset bentknees crouched bigsteps highknees fairysteps flapping karatechop dragleftleg handsinpockets robot"
 
 for STYLE in $STYLES; do
     STYLE_DIR="$BASE_STYLE_DIR/$STYLE"

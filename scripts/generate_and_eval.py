@@ -48,8 +48,7 @@ _ALL_STYLES = [
     "angry", "chicken", "cat", "dinosaur",
     "heavyset", "bentknees", "crouched", "bigsteps",
     "highknees", "fairysteps", "flapping", "karatechop",
-    "dragleftleg", "handsinpockets", "sneaky",
-    "mixed",
+    "dragleftleg", "handsinpockets", "robot",
 ]
 LORA_MODELS = {
     s: f"/transfer/loraoutputs/models/lora_bvh_{s}{_SUFFIX}/final"
