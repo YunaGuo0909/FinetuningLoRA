@@ -23,7 +23,18 @@ STYLE_DIR = "/transfer/loradataset/100STYLE"
 OUTPUT_DIR = "/transfer/loradataset/style_bvh"
 HML3D_DIR = "/transfer/loradataset/humanml3d"
 
-STYLES = ["Zombie", "Elated", "Old", "Depressed", "Drunk"]
+STYLES = [
+    # --- Original 5 ---
+    "Zombie", "Elated", "Old", "Depressed", "Drunk",
+    # --- Emotion / attitude ---
+    "Angry", "Chicken", "Cat", "Dinosaur",
+    # --- Physical characteristics ---
+    "Heavyset", "BentKnees", "Crouched", "BigSteps",
+    # --- Exaggerated / performative ---
+    "HighKnees", "FairySteps", "Flapping", "KarateChop",
+    # --- Asymmetric / constrained ---
+    "DragLeftLeg", "HandsInPockets", "Sneaky",
+]
 
 
 def main():

@@ -364,10 +364,16 @@ DEFAULT_JOINT_MAP = {
 class BVHToHumanML3D:
     """Convert BVH files to HumanML3D 263-dim features."""
 
-    def __init__(self, joint_map: dict | None = None, target_fps: int = 20):
+    # Reference body height from HumanML3D (average pelvis Y across dataset).
+    # Used to scale BVH skeletons to match HumanML3D proportions.
+    HUMANML3D_REF_HEIGHT = 0.92  # meters, approximate average pelvis height
+
+    def __init__(self, joint_map: dict | None = None, target_fps: int = 20,
+                 match_height: bool = True):
         self.parser = BVHParser()
         self.joint_map = joint_map or DEFAULT_JOINT_MAP
         self.target_fps = target_fps
+        self.match_height = match_height
 
     def convert(self, bvh_path: str) -> np.ndarray | None:
         """Convert a single BVH file to (T, 263) features.
@@ -421,6 +427,15 @@ class BVHToHumanML3D:
         avg_height = positions_22[:, 0, 1].mean()
         if abs(avg_height) > 50:
             positions_22 /= 100.0
+
+        # Scale skeleton to match HumanML3D body proportions.
+        # Without this, BVH skeletons are ~50% smaller than HumanML3D,
+        # causing LoRA to learn a compressed body scale.
+        if self.match_height:
+            avg_pelvis_h = np.mean(positions_22[:, 0, 1])
+            if avg_pelvis_h > 0.1:
+                scale = self.HUMANML3D_REF_HEIGHT / avg_pelvis_h
+                positions_22 *= scale
 
         # Resample to target FPS
         if src_fps != self.target_fps and src_fps > 0:

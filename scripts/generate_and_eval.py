@@ -35,19 +35,25 @@ from src.visualization.motion_viz import (
 CHECKPOINT_DIR = "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512"
 HML3D_DIR = "/transfer/loradataset/humanml3d"
 
-# Set LORA_VERSION env var: "v1" (default), "v2" (foot penalty), "v3" (low alpha + foot penalty)
+# Set LORA_VERSION env var: "v1" (default), "v2"..."v5" etc.
 import os
 _LORA_VER = os.environ.get("LORA_VERSION", "v1")
-_SUFFIX = {"v1": "", "v2": "_v2", "v3": "_v3", "v4": "_v4"}.get(_LORA_VER, "")
+_SUFFIX = {"v1": "", "v2": "_v2", "v3": "_v3", "v4": "_v4", "v5": "_v5"}.get(_LORA_VER, "")
 
 OUTPUT_DIR = f"/transfer/loraoutputs/eval/multi_style{_SUFFIX}"
+
+# All styles that may have been trained. Missing directories are skipped at runtime.
+_ALL_STYLES = [
+    "zombie", "elated", "old", "depressed", "drunk",
+    "angry", "chicken", "cat", "dinosaur",
+    "heavyset", "bentknees", "crouched", "bigsteps",
+    "highknees", "fairysteps", "flapping", "karatechop",
+    "dragleftleg", "handsinpockets", "sneaky",
+    "mixed",
+]
 LORA_MODELS = {
-    "zombie":    f"/transfer/loraoutputs/models/lora_bvh_zombie{_SUFFIX}/final",
-    "elated":    f"/transfer/loraoutputs/models/lora_bvh_elated{_SUFFIX}/final",
-    "old":       f"/transfer/loraoutputs/models/lora_bvh_old{_SUFFIX}/final",
-    "depressed": f"/transfer/loraoutputs/models/lora_bvh_depressed{_SUFFIX}/final",
-    "drunk":     f"/transfer/loraoutputs/models/lora_bvh_drunk{_SUFFIX}/final",
-    "mixed":     f"/transfer/loraoutputs/models/lora_bvh_mixed{_SUFFIX}/final",
+    s: f"/transfer/loraoutputs/models/lora_bvh_{s}{_SUFFIX}/final"
+    for s in _ALL_STYLES
 }
 
 PROMPTS = [
