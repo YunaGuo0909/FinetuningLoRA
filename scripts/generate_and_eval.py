@@ -45,10 +45,11 @@ OUTPUT_DIR = f"/transfer/loraoutputs/eval/multi_style{_SUFFIX}"
 # All styles that may have been trained. Missing directories are skipped at runtime.
 _ALL_STYLES = [
     "zombie", "elated", "old", "depressed", "drunk",
-    "angry", "chicken", "cat", "dinosaur",
-    "heavyset", "bentknees", "crouched", "bigsteps",
-    "highknees", "fairysteps", "flapping", "karatechop",
-    "dragleftleg", "handsinpockets", "robot",
+    "angry", "chicken", "proud",
+    "heavyset", "bigsteps", "stiff", "duckfoot",
+    "highknees", "flapping", "punch", "wildarms",
+    "handsinpockets", "handsbetweenlegs", "onphoneleft",
+    "penguin", "robot",
 ]
 LORA_MODELS = {
     s: f"/transfer/loraoutputs/models/lora_bvh_{s}{_SUFFIX}/final"

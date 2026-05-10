@@ -27,13 +27,15 @@ STYLES = [
     # --- Original 5 ---
     "Zombie", "Elated", "Old", "Depressed", "Drunk",
     # --- Emotion / attitude ---
-    "Angry", "Chicken", "Cat", "Dinosaur",
+    "Angry", "Chicken", "Proud",
     # --- Physical characteristics ---
-    "Heavyset", "BentKnees", "Crouched", "BigSteps",
+    "Heavyset", "BigSteps", "Stiff", "DuckFoot",
     # --- Exaggerated / performative ---
-    "HighKnees", "FairySteps", "Flapping", "KarateChop",
-    # --- Asymmetric / constrained ---
-    "DragLeftLeg", "HandsInPockets", "Robot",
+    "HighKnees", "Flapping", "Punch", "WildArms",
+    # --- Constrained / asymmetric ---
+    "HandsInPockets", "HandsBetweenLegs", "OnPhoneLeft",
+    # --- Imitation ---
+    "Penguin", "Robot",
 ]
 
 
