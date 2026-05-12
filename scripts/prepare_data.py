@@ -21,9 +21,6 @@ import tarfile
 import numpy as np
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Paths on training machine
-# ---------------------------------------------------------------------------
 
 TRANSFER_ROOT = Path("/transfer")
 DATASETS_DIR = TRANSFER_ROOT / "loradataset"
@@ -41,9 +38,6 @@ MDM_GDRIVE_ID = "1PE0PK8e5a5j-7-Xhs5YET5U5pGh0c821"
 STYLE100_URL = "https://www.ianmaurice.com/100style/100STYLE.zip"
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def exists_and_nonempty(path: Path) -> bool:
     """Check if path exists and is non-empty (file > 0 bytes, dir has children)."""
@@ -75,9 +69,6 @@ def download_gdrive(file_id: str, output_path: str):
     gdown.download(id=file_id, output=output_path, quiet=False)
 
 
-# ---------------------------------------------------------------------------
-# HumanML3D
-# ---------------------------------------------------------------------------
 
 def prepare_humanml3d():
     """Download and prepare HumanML3D dataset."""
@@ -152,9 +143,6 @@ def prepare_humanml3d():
     return verify_humanml3d()
 
 
-# ---------------------------------------------------------------------------
-# 100STYLE
-# ---------------------------------------------------------------------------
 
 def prepare_100style():
     """Download 100STYLE BVH dataset."""
@@ -212,9 +200,6 @@ def prepare_100style():
     return bvh_count > 0
 
 
-# ---------------------------------------------------------------------------
-# MDM pretrained weights
-# ---------------------------------------------------------------------------
 
 def prepare_pretrained():
     """Download official MDM pretrained weights."""
@@ -246,9 +231,6 @@ def prepare_pretrained():
     return False
 
 
-# ---------------------------------------------------------------------------
-# Verification
-# ---------------------------------------------------------------------------
 
 def verify_humanml3d() -> bool:
     """Verify HumanML3D dataset completeness."""
@@ -317,9 +299,6 @@ def verify_all():
     return all(results.values())
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare datasets on training machine")

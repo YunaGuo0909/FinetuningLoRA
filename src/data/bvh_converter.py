@@ -39,9 +39,6 @@ L_FOOT_IDX, R_FOOT_IDX = 10, 11
 L_ANKLE_IDX, R_ANKLE_IDX = 7, 8
 
 
-# ---------------------------------------------------------------------------
-# BVH Parser
-# ---------------------------------------------------------------------------
 
 class BVHParser:
     """Minimal BVH parser that extracts joint hierarchy and motion data."""
@@ -117,9 +114,6 @@ class BVHParser:
         return np.array(frames, dtype=np.float64), frame_time
 
 
-# ---------------------------------------------------------------------------
-# Forward Kinematics
-# ---------------------------------------------------------------------------
 
 def euler_to_rotation_matrix(angles_deg: np.ndarray, order: str = "ZXY") -> np.ndarray:
     """Convert Euler angles (degrees) to 3x3 rotation matrix."""
@@ -197,9 +191,6 @@ def forward_kinematics(joints: list, frame_data: np.ndarray):
     return positions, local_rotations
 
 
-# ---------------------------------------------------------------------------
-# Feature computation
-# ---------------------------------------------------------------------------
 
 def rotation_matrix_to_6d(R: np.ndarray) -> np.ndarray:
     """Convert 3x3 rotation matrix to 6D representation (first two columns).
@@ -322,11 +313,8 @@ def compute_humanml3d_features(positions_seq: np.ndarray,
     return features
 
 
-# ---------------------------------------------------------------------------
-# BVH -> HumanML3D Converter
-# ---------------------------------------------------------------------------
 
-# Common BVH-to-HumanML3D joint name mapping
+# BVH-to-HumanML3D joint name mapping
 # Mapping: BVH joint name -> HumanML3D joint name
 # Multiple common BVH naming conventions are supported.
 DEFAULT_JOINT_MAP = {

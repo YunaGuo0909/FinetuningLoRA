@@ -16,9 +16,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ---------------------------------------------------------------------------
-# Building blocks
-# ---------------------------------------------------------------------------
 
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim):
@@ -108,9 +105,6 @@ class TransformerBlock(nn.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
-# MDM
-# ---------------------------------------------------------------------------
 
 class MDM(nn.Module):
     """Motion Diffusion Model.
@@ -205,9 +199,6 @@ class MDM(nn.Module):
         return output
 
 
-# ---------------------------------------------------------------------------
-# Weight conversion from official MDM checkpoint
-# ---------------------------------------------------------------------------
 
 def load_pretrained_mdm(model: MDM, ckpt_path: str, strict: bool = False) -> MDM:
     """Load official MDM checkpoint, remapping fused QKV weights to separate layers.

@@ -1,15 +1,14 @@
-"""Generate motions with base MDM vs multiple LoRA MDMs, evaluate and visualize.
-
-Supports comparing multiple single-style LoRAs against the base model.
-"""
+"""Generate, evaluate and visualise base MDM vs LoRA outputs."""
 
 from __future__ import annotations
 
+import os
 import sys
 import json
 import numpy as np
 import torch
 from pathlib import Path
+from peft import PeftModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -28,17 +27,12 @@ from src.visualization.motion_viz import (
     render_comparison,
 )
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 CHECKPOINT_DIR = "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512"
-HML3D_DIR = "/transfer/loradataset/humanml3d"
+HML3D_DIR     = "/transfer/loradataset/humanml3d"
 
-# Set LORA_VERSION env var: "v1" (default), "v2"..."v5" etc.
-import os
+# Use LORA_VERSION env var to select model version (v1..v5)
 _LORA_VER = os.environ.get("LORA_VERSION", "v1")
-_SUFFIX = {"v1": "", "v2": "_v2", "v3": "_v3", "v4": "_v4", "v5": "_v5"}.get(_LORA_VER, "")
+_SUFFIX = {"v1": "", "v2": "_v2", "v3": "_v3", "v4": "_v4", "v5": "_v5", "v6": "_v6"}.get(_LORA_VER, "")
 
 OUTPUT_DIR = f"/transfer/loraoutputs/eval/multi_style{_SUFFIX}"
 
@@ -69,10 +63,6 @@ MOTION_LENGTH = 196
 DDIM_STEPS = 50
 SEED = 42
 
-
-# ---------------------------------------------------------------------------
-# Generation
-# ---------------------------------------------------------------------------
 
 @torch.no_grad()
 def generate(model, diffusion, prompts, device, num_samples=4, motion_length=196):
@@ -112,10 +102,6 @@ def generate(model, diffusion, prompts, device, num_samples=4, motion_length=196
     return np.concatenate(all_motions, axis=0)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(SEED)
@@ -130,101 +116,67 @@ def main():
 
     diffusion = GaussianDiffusion(1000, "cosine")
 
-    # --- Base model generation ---
-    print("\n" + "=" * 60)
-    print("Generating with BASE model...")
-    print("=" * 60)
+    print("Generating: base model")
     base_model = load_official_mdm(CHECKPOINT_DIR, device=device)
     base_model.eval()
-
     torch.manual_seed(SEED)
     base_motions = generate(base_model, diffusion, PROMPTS, device, NUM_SAMPLES, MOTION_LENGTH)
     np.save(out_dir / "base_motions.npy", base_motions)
-    print(f"  Generated {base_motions.shape[0]} motions, range: [{base_motions.min():.3f}, {base_motions.max():.3f}]")
     del base_model
     torch.cuda.empty_cache()
 
-    # --- LoRA models generation ---
     lora_results = {}
     for style_name, lora_path in LORA_MODELS.items():
         lora_path = Path(lora_path)
         if not lora_path.exists():
-            print(f"\n  SKIP {style_name}: {lora_path} not found")
             continue
-
-        print(f"\n{'=' * 60}")
-        print(f"Generating with LoRA: {style_name}")
-        print("=" * 60)
-
+        print(f"Generating: {style_name}")
         lora_model = load_official_mdm(CHECKPOINT_DIR, device="cpu")
         lora_model = replace_attention_layers(lora_model)
-        from peft import PeftModel
         lora_model = PeftModel.from_pretrained(lora_model, str(lora_path))
         lora_model = lora_model.to(device).eval()
-
         torch.manual_seed(SEED)
         motions = generate(lora_model, diffusion, PROMPTS, device, NUM_SAMPLES, MOTION_LENGTH)
         np.save(out_dir / f"lora_{style_name}_motions.npy", motions)
-        print(f"  Generated {motions.shape[0]} motions, range: [{motions.min():.3f}, {motions.max():.3f}]")
-
         lora_results[style_name] = motions
         del lora_model
         torch.cuda.empty_cache()
 
     if not lora_results:
-        print("\nNo LoRA models found! Train first with: bash run_train.sh")
+        print("No LoRA models found.")
         return
 
-    # --- Evaluation ---
-    print(f"\n{'=' * 60}")
     print("Evaluating...")
-    print("=" * 60)
-
     evaluator = MotionEvaluator(mean, std)
     all_eval = {"base_model": evaluator.evaluate_batch(base_motions)}
-
     for style_name, motions in lora_results.items():
         results = evaluator.compare_base_vs_lora(base_motions, motions)
         all_eval[f"lora_{style_name}"] = results["with_lora"]
-        print(f"\n  {style_name}:")
-        for k, v in results["with_lora"].items():
-            print(f"    {k}: {v:.4f}")
+        print(f"  {style_name}: " + "  ".join(f"{k}={v:.4f}" for k, v in results["with_lora"].items()))
 
     with open(out_dir / "evaluation_results.json", "w") as f:
         json.dump(all_eval, f, indent=2)
 
-    # --- Visualization ---
-    print(f"\n{'=' * 60}")
-    print("Rendering visualizations...")
-    print("=" * 60)
-
+    print("Rendering...")
     viz_dir = out_dir / "viz"
     viz_dir.mkdir(exist_ok=True)
 
-    # Denormalize
     base_denorm = base_motions * std_safe + mean
+    lora_denorms = {s: m * std_safe + mean for s, m in lora_results.items()}
 
-    lora_denorms = {}
-    for style_name, motions in lora_results.items():
-        lora_denorms[style_name] = motions * std_safe + mean
-
-    # Render per prompt: base + each LoRA
     for i, prompt in enumerate(PROMPTS):
-        idx = i * NUM_SAMPLES  # first sample of each prompt
+        idx = i * NUM_SAMPLES
         prompt_short = prompt.replace(" ", "_")[:30]
-
         base_pos = motion_features_to_positions(base_denorm[idx])
         render_motion_animation(
             base_pos, str(viz_dir / f"{i}_base_{prompt_short}.gif"),
             title=f"Base: {prompt[:40]}", fps=20,
         )
-
         for style_name, denorm in lora_denorms.items():
             lora_pos = motion_features_to_positions(denorm[idx])
-
             render_motion_animation(
                 lora_pos, str(viz_dir / f"{i}_lora_{style_name}_{prompt_short}.gif"),
-                title=f"LoRA-{style_name}: {prompt[:40]}", fps=20,
+                title=f"{style_name}: {prompt[:40]}", fps=20,
             )
             render_comparison(
                 base_pos, lora_pos,
@@ -232,16 +184,12 @@ def main():
                 title=f"Base vs {style_name}: {prompt[:30]}", fps=20,
             )
 
-        print(f"  Rendered: {prompt[:50]}")
-
-    # Reference HumanML3D motion
     hml_file = sorted(Path(HML3D_DIR).joinpath("new_joint_vecs").glob("*.npy"))[0]
-    hml_motion = np.load(hml_file)[:MOTION_LENGTH]
-    hml_pos = motion_features_to_positions(hml_motion)
+    hml_pos = motion_features_to_positions(np.load(hml_file)[:MOTION_LENGTH])
     render_motion_animation(hml_pos, str(viz_dir / "reference_humanml3d.gif"),
                             title="Reference (HumanML3D)", fps=20)
 
-    print(f"\nAll outputs saved to {out_dir}")
+    print(f"Done. Outputs: {out_dir}")
 
 
 if __name__ == "__main__":

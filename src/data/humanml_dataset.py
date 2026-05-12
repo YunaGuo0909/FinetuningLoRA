@@ -1,13 +1,4 @@
-"""HumanML3D dataset loader for motion diffusion training.
-
-Expected directory structure (after running prepare_data.py):
-    data/HumanML3D/
-        new_joint_vecs/     # .npy motion features (T, 263)
-        texts/              # .txt caption files (multiple captions per motion)
-        Mean.npy            # feature-wise mean
-        Std.npy             # feature-wise std
-        train.txt / val.txt / test.txt   # split lists
-"""
+"""HumanML3D and style dataset loaders for MDM training."""
 
 import json
 import random
@@ -18,7 +9,6 @@ from torch.utils.data import Dataset
 
 
 class HumanML3DDataset(Dataset):
-    """HumanML3D dataset with text conditioning for MDM training."""
 
     def __init__(
         self,
@@ -35,17 +25,14 @@ class HumanML3DDataset(Dataset):
         self.nfeats = nfeats
         self.unit_length = unit_length
 
-        # Load normalization stats
-        self.mean = np.load(self.data_dir / "Mean.npy")  # (263,)
-        self.std = np.load(self.data_dir / "Std.npy")    # (263,)
-        self.std[self.std < 1e-5] = 1.0  # avoid division by zero
+        self.mean = np.load(self.data_dir / "Mean.npy")
+        self.std = np.load(self.data_dir / "Std.npy")
+        self.std[self.std < 1e-5] = 1.0
 
-        # Load split
         split_file = self.data_dir / f"{split}.txt"
         with open(split_file) as f:
             self.ids = [line.strip() for line in f if line.strip()]
 
-        # Pre-filter by motion length and load captions
         self.data = []
         motion_dir = self.data_dir / "new_joint_vecs"
         text_dir = self.data_dir / "texts"
@@ -60,7 +47,7 @@ class HumanML3DDataset(Dataset):
             if motion.shape[0] < min_motion_length or motion.shape[0] > 600:
                 continue
 
-            # Parse captions (HumanML3D format: "caption#start#end" per line)
+            # caption format: "text#start#end" per line
             captions = []
             with open(text_file, encoding="utf-8") as f:
                 for line in f:
@@ -77,33 +64,27 @@ class HumanML3DDataset(Dataset):
                 "length": motion.shape[0],
             })
 
-        print(f"HumanML3D [{split}]: {len(self.data)} motions loaded")
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         entry = self.data[idx]
-        motion = np.load(entry["motion_path"])  # (T, 263)
-
-        # Random crop to max_motion_length
+        motion = np.load(entry["motion_path"])
         T = motion.shape[0]
         if T > self.max_motion_length:
             start = random.randint(0, T - self.max_motion_length)
             motion = motion[start:start + self.max_motion_length]
             T = self.max_motion_length
 
-        # Normalize
         motion = (motion - self.mean) / self.std
 
-        # Pad to max_motion_length
         pad_len = self.max_motion_length - T
         mask = np.zeros(self.max_motion_length, dtype=bool)
         if pad_len > 0:
             motion = np.concatenate([motion, np.zeros((pad_len, self.nfeats))], axis=0)
-            mask[T:] = True  # True = padding
+            mask[T:] = True
 
-        # Random caption
         caption = random.choice(entry["captions"])
 
         return {
@@ -116,14 +97,7 @@ class HumanML3DDataset(Dataset):
 
 
 class StyleMotionDataset(Dataset):
-    """Dataset for style-specific LoRA fine-tuning (e.g. 100STYLE data).
-
-    Expects motions converted to HumanML3D 263-dim format via bvh_converter.
-    Directory structure:
-        style_data_dir/
-            motions/          # .npy files (T, 263)
-            metadata.jsonl    # {"file": "xxx.npy", "action": "walk", "style": "zombie", "caption": "..."}
-    """
+    """100STYLE BVH-converted motions, normalised with HumanML3D stats."""
 
     def __init__(
         self,
@@ -144,30 +118,21 @@ class StyleMotionDataset(Dataset):
                 entry = json.loads(line)
                 self.entries.append(entry)
 
-        # Use HumanML3D stats — LoRA must operate in same space as pretrained model
         self.mean = mean.copy()
         self.std = std.copy()
         self.std[self.std < 1e-5] = 1.0
 
-        # Check if data is already HumanML3D-native (no clipping needed)
+        # Auto-detect if BVH data needs clipping to [-5, 5]
         sample = np.load(self.data_dir / "motions" / self.entries[0]["file"])
-        normed_sample = (sample - self.mean) / self.std
-        max_val = np.abs(normed_sample).max()
-        self.clip_val = 5.0 if max_val > 10 else None  # only clip BVH-converted data
-
-        print(f"StyleMotionDataset: {len(self.entries)} motions from {data_dir}")
-        if self.clip_val:
-            print(f"  BVH-converted data detected (max norm={max_val:.1f}), clipping to [-5, 5]")
-        else:
-            print(f"  HumanML3D-native data (max norm={max_val:.1f}), no clipping needed")
+        max_val = np.abs((sample - self.mean) / self.std).max()
+        self.clip_val = 5.0 if max_val > 10 else None
 
     def __len__(self):
         return len(self.entries)
 
     def __getitem__(self, idx):
         entry = self.entries[idx]
-        motion_path = self.data_dir / "motions" / entry["file"]
-        motion = np.load(motion_path)  # (T, 263)
+        motion = np.load(self.data_dir / "motions" / entry["file"])
 
         T = motion.shape[0]
         if T > self.max_motion_length:

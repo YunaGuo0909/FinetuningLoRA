@@ -1,10 +1,4 @@
-"""Wrapper around the official MDM codebase for LoRA injection.
-
-Loads the official MDM model with pretrained weights, then replaces
-nn.MultiheadAttention with separate Q/K/V layers for PEFT LoRA support.
-
-Requires: /transfer/mdm_official (cloned official MDM repo)
-"""
+"""MDM wrapper for LoRA injection. Requires /transfer/mdm_official."""
 
 from __future__ import annotations
 
@@ -17,26 +11,13 @@ from pathlib import Path
 from argparse import Namespace
 
 
-# ---------------------------------------------------------------------------
-# Add official MDM repo to path
-# ---------------------------------------------------------------------------
-
 MDM_REPO_PATH = "/transfer/mdm_official"
 if MDM_REPO_PATH not in sys.path:
     sys.path.insert(0, MDM_REPO_PATH)
 
 
-# ---------------------------------------------------------------------------
-# Drop-in replacement for nn.MultiheadAttention with separate Q/K/V
-# ---------------------------------------------------------------------------
-
 class SplitQKVAttention(nn.Module):
-    """Drop-in replacement for nn.MultiheadAttention with explicit Q/K/V.
-
-    Accepts the same forward signature as nn.MultiheadAttention so it works
-    inside nn.TransformerEncoderLayer without changes.
-    LoRA targets: to_q, to_k, to_v, to_out
-    """
+    """Drop-in for nn.MultiheadAttention with split Q/K/V linears (PEFT-compatible)."""
 
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
@@ -102,23 +83,11 @@ class SplitQKVAttention(nn.Module):
         return out, None
 
 
-# ---------------------------------------------------------------------------
-# Model loading and LoRA injection
-# ---------------------------------------------------------------------------
-
 def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
-    """Load the official MDM model with pretrained weights.
-
-    Args:
-        checkpoint_dir: path containing model*.pt and args.json
-            e.g. "/transfer/lorapretrain/humanml_trans_enc_512/humanml_trans_enc_512"
-        device: device to load to
-    Returns:
-        MDM model with loaded weights
-    """
+    """Load official MDM from checkpoint_dir (must contain model*.pt and args.json)."""
     ckpt_dir = Path(checkpoint_dir)
 
-    # Load args, fill in defaults for fields added in newer MDM versions
+    # Fill defaults for fields absent in older checkpoints
     args_path = ckpt_dir / "args.json"
     with open(args_path) as f:
         args_dict = json.load(f)
@@ -140,17 +109,14 @@ def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
 
     args = Namespace(**args_dict)
 
-    # Find the checkpoint file
     pt_files = sorted(ckpt_dir.glob("model*.pt"))
     if not pt_files:
         raise FileNotFoundError(f"No model*.pt found in {ckpt_dir}")
-    ckpt_path = pt_files[-1]  # latest checkpoint
+    ckpt_path = pt_files[-1]
 
-    # Import official MDM
     from model.mdm import MDM
 
-    # Build model args directly from args.json (avoid needing a data object)
-    njoints = 263 if args.dataset == "humanml" else 251  # humanml=263, kit=251
+    njoints = 263 if args.dataset == "humanml" else 251
     model_args = {
         "modeltype": "",
         "njoints": njoints,
@@ -178,61 +144,40 @@ def load_official_mdm(checkpoint_dir: str, device: str = "cpu") -> nn.Module:
         "legacy": args.legacy,
     }
 
-    # Patch: skip SMPL body model loading (only needed for rot2xyz visualization,
-    # not for diffusion training/inference with hml_vec representation)
+    # Skip SMPL init — only needed for rot2xyz viz, not for hml_vec inference
     import model.smpl as _smpl_module
     _orig_smpl_init = _smpl_module.SMPL.__init__
     def _dummy_smpl_init(self, **kwargs):
         nn.Module.__init__(self)
     _smpl_module.SMPL.__init__ = _dummy_smpl_init
 
-    # Create model
     model = MDM(**model_args)
-
-    # Restore original SMPL init
     _smpl_module.SMPL.__init__ = _orig_smpl_init
 
-    # Load weights
     state_dict = torch.load(str(ckpt_path), map_location=device)
-    # Remove PE keys (official pattern from load_model_wo_clip)
-    keys_to_remove = [k for k in state_dict.keys()
-                      if "sequence_pos_encoder" in k or "clip_model" in k]
-    for k in keys_to_remove:
+    # Drop positional encoder and CLIP weights (loaded separately)
+    for k in [k for k in state_dict if "sequence_pos_encoder" in k or "clip_model" in k]:
         del state_dict[k]
 
     model.load_state_dict(state_dict, strict=False)
-    print(f"Loaded official MDM from {ckpt_path}")
-    print(f"  Arch: {args.arch}, Layers: {args.layers}, Latent: {args.latent_dim}")
-
     model.to(device)
     return model
 
 
 def replace_attention_layers(model: nn.Module) -> nn.Module:
-    """Replace nn.MultiheadAttention in MDM transformer with SplitQKVAttention.
-
-    Only targets the MDM's own transformer layers, NOT the CLIP text encoder.
-    This enables PEFT LoRA to target to_q, to_k, to_v, to_out.
-    """
-    count = 0
-    # Walk all submodules and replace any nn.MultiheadAttention,
-    # but skip the CLIP model (clip_model) to avoid dtype issues
+    """Replace MDM's fused MultiheadAttention with SplitQKVAttention. Skips CLIP layers."""
     for name, module in model.named_modules():
         if "clip_model" in name:
             continue
         for attr_name, child in list(module.named_children()):
             if isinstance(child, nn.MultiheadAttention):
-                new_attn = SplitQKVAttention.from_multihead_attention(child)
-                setattr(module, attr_name, new_attn)
-                count += 1
-
-    print(f"Replaced {count} attention layers with SplitQKVAttention")
+                setattr(module, attr_name, SplitQKVAttention.from_multihead_attention(child))
     return model
 
 
 def apply_lora(model: nn.Module, rank: int = 16, alpha: int = 16,
                target_modules: list[str] = None, dropout: float = 0.05) -> nn.Module:
-    """Apply LoRA adapters to the model's attention layers."""
+    """Inject LoRA adapters into attention projections."""
     from peft import LoraConfig, get_peft_model
 
     if target_modules is None:
@@ -251,16 +196,11 @@ def apply_lora(model: nn.Module, rank: int = 16, alpha: int = 16,
 
 def prepare_mdm_for_lora(checkpoint_dir: str, rank: int = 16, alpha: int = 16,
                           device: str = "cpu") -> nn.Module:
-    """Full pipeline: load official MDM → replace attention → apply LoRA."""
     model = load_official_mdm(checkpoint_dir, device=device)
     model = replace_attention_layers(model)
-    model = apply_lora(model, rank=rank, alpha=alpha)
-    return model
+    return apply_lora(model, rank=rank, alpha=alpha)
 
 
-# ---------------------------------------------------------------------------
-# Helpers for training/inference
-# ---------------------------------------------------------------------------
 
 def motion_to_mdm_input(motion: torch.Tensor) -> torch.Tensor:
     """Convert (B, T, 263) motion to official MDM format (B, 263, 1, T)."""

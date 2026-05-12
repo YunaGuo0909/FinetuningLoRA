@@ -39,9 +39,6 @@ def load_config(config_path: str = "configs/default.json") -> dict:
         return json.load(f)
 
 
-# ---------------------------------------------------------------------------
-# Pipeline stages
-# ---------------------------------------------------------------------------
 
 def stage_convert_data(style_bvh_dir: str, output_dir: str, style_label: str):
     """Stage 1: Convert BVH files to HumanML3D format."""
@@ -177,9 +174,6 @@ def stage_evaluate_and_visualize(
     return results
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Motion Style-Adaptive LoRA Pipeline")

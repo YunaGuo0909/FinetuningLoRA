@@ -177,7 +177,6 @@ def render_motion_animation(
         anim.save(str(out), writer="ffmpeg", fps=fps)
 
     plt.close(fig)
-    print(f"Animation saved to {out}")
     return str(out)
 
 
@@ -215,7 +214,6 @@ def render_comparison(
         anim.save(str(out), writer="ffmpeg", fps=fps)
 
     plt.close(fig)
-    print(f"Comparison animation saved to {out}")
 
 
 def save_frame_sequence(
