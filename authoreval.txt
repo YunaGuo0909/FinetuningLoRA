@@ -1,0 +1,36 @@
+rank 1-10
+10 ：很好
+5： 就是看不出来style但没什么大问题 普通状态 
+
+// 1. walking_forward
+0_cmp_angry_a_person_walking_forward - 9  确实能看出愤怒但手臂有一点乱甩
+bentknees - 5  totally normal
+bigstep - 10   funny and 有效果
+cat  - 4  我看不出来是cat 但确实有所谓的风格
+chicken - 10  funny 
+#crouched  - 7 确实有点蹲着
+depressed  - 8  和crouched 很像  就是一个驼背的感觉  -- 
+dinosaur  - 4  看不出来是恐龙 但确实有一点风格
+dragleftleg - 4  不太明显
+drunk  -  10  摇晃的
+duckfoot  -  9  funny
+elated - 9  一蹦一跳的 还可以 确实很开心
+fairystep  - 5   有风格但不明显
+flapping   - 4  手臂很长  --看不出可能因为本来这个就不算一个风格
+handsbetweenlegs  - 5  但滑步严重 还会翻转
+handsinpockets  - 7  确实有两手插兜的感觉
+heavyset - 5 -看不出来但两只手确实看起来像拿着什么 可能重物就不风格 
+highknees - 5 
+karatechop  5  
+old  -10
+on phoneleft - 6
+penguin - 5
+proud - 6 
+punch - 4   这个怪
+robot - 6
+stiff 5  无任何风格
+wildarms  - 7 
+zombie - 9
+
+
+
