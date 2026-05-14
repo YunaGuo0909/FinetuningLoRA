@@ -1,0 +1,43 @@
+Average rating data from 10 users (#mean)
+
+rank 1-10
+10 : Very good
+5: Just can't see the style but no major issues, normal state
+
+
+// 1. walking_forward (#mean of 10 users)
+
+angry- 8.2
+bentknees - 4.6
+bigstep - 9.7
+cat  - 4
+chicken - 9.4
+#crouched  - 7.1
+depressed  - 7.3
+dinosaur  - 3.2
+dragleftleg - 3.6
+drunk  -  9.6
+duckfoot  -  8.9
+
+elated - 7.8
+fairystep  - 4.2
+flapping   - 4.3
+
+handsbetweenlegs  - 5.2
+
+handsinpockets  - 6.9
+heavyset - 4.8
+highknees - 5.1
+karatechop  4.9
+
+old  - 9.8
+on phoneleft - 5.8
+penguin - 5.4
+proud - 6.2
+punch - 3.1
+
+robot - 6.5
+stiff - 5.0
+wildarms  - 7.6
+zombie - 8.1
+
