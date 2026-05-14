@@ -1,217 +1,210 @@
-# Motion Style-Adaptive LoRA Fine-Tuning Pipeline
+# Motion Style-Adaptive LoRA Fine-Tuning for MDM
 
-A pipeline for fine-tuning the **Motion Diffusion Model (MDM)** with LoRA adapters to learn stylised human motion generation. Given a style-specific motion capture dataset (e.g. "zombie walk" from 100STYLE), the system trains lightweight LoRA adapters that steer the base model toward generating motions in that style — even when prompted with generic captions like *"a person walking forward"*.
+A pipeline for fine-tuning the **Motion Diffusion Model (MDM)** with LoRA adapters to generate stylised human motion. Given a style-specific motion capture dataset (e.g. "zombie walk" from 100STYLE), the system trains lightweight LoRA adapters that steer the base model toward that style — even when prompted with generic text like *"a person walking forward"*.
 
 This repo wraps the **official MDM codebase** (Tevet et al. 2023) and injects PEFT-compatible LoRA adapters by replacing the fused `nn.MultiheadAttention` with split `to_q / to_k / to_v / to_out` linear layers.
+
+---
 
 ## Project Structure
 
 ```
 FinetuningLoRA/
 ├── configs/default.json              # Hyperparameters and /transfer paths
-├── pipeline.py                       # Legacy end-to-end orchestrator (deprecated)
-├── run_train.sh                      # Batch trainer: all styles + mixed
-├── process0504.md                    # Engineering log (Phase 1-13)
 │
 ├── src/
 │   ├── models/
 │   │   ├── mdm_official.py           # Official MDM wrapper + SplitQKVAttention + LoRA injection
-│   │   ├── mdm.py                    # Custom MDM (legacy, kept for reference only)
+│   │   ├── mdm.py                    # Custom MDM (legacy, kept for reference)
 │   │   └── diffusion.py              # Cosine-schedule Gaussian diffusion (DDPM + DDIM)
 │   ├── data/
-│   │   ├── humanml_dataset.py        # HumanML3DDataset & StyleMotionDataset (HML3D-space norm + clip)
+│   │   ├── humanml_dataset.py        # HumanML3DDataset & StyleMotionDataset
 │   │   └── bvh_converter.py          # 100STYLE BVH -> 263-dim with real 6D rotations
 │   ├── training/
-│   │   └── train_mdm_lora.py         # LoRA fine-tuning (predicts x_0, not noise)
+│   │   └── train_mdm_lora.py         # LoRA fine-tuning with foot + root auxiliary losses
 │   ├── evaluation/
-│   │   └── evaluator.py              # FID, Diversity, Jitter metrics
+│   │   └── evaluator.py              # Diversity and Jitter metrics
 │   └── visualization/
-│       └── motion_viz.py             # Skeleton animation with foot-contact lock + fixed axes
+│       └── motion_viz.py             # Skeleton animation renderer
 │
 └── scripts/
     ├── prepare_data.py               # Download/verify datasets and pretrained weights
-    ├── reconvert_and_check.py        # Reconvert 100STYLE BVH per-style with fixed rotations
-    ├── filter_style_data.py          # (Failed experiment v6) filter HumanML3D by captions
-    ├── convert_100style.py           # Old all-in-one BVH converter
-    ├── generate_and_eval.py          # Multi-LoRA vs base generation + eval + viz
-    ├── diagnose_data.py              # Sanity-check feature ranges
-    └── diagnose_lora.py              # Verify LoRA weights actually load & affect output
+    ├── reconvert_and_check.py        # Convert 100STYLE BVH per-style with fixed rotations
+    ├── generate_and_eval.py          # Multi-LoRA vs base generation + eval + visualisation
+    ├── train_v2_foot_penalty.sh      # Batch train with foot velocity penalty
+    ├── train_v3_low_alpha.sh         # Batch train with lower alpha (=8)
+    ├── diagnose_data.py              # Check feature ranges, NaN/Inf
+    └── diagnose_lora.py              # Verify LoRA weights load and affect output
 ```
 
-> A detailed phase-by-phase engineering log of every problem solved (NaN loss, normalisation mismatch, attention layer surgery, x_0 vs noise prediction, etc.) lives in [`process0504.md`](process0504.md).
+---
 
 ## Architecture
 
-### Base Model: Official MDM (Motion Diffusion Model)
+### Base Model
 
-We load Tevet et al.'s official `humanml_trans_enc_512` checkpoint (475 K steps, ~78 MB) and patch it for LoRA:
+Official MDM `humanml_trans_enc_512` checkpoint (475 K steps, ~78 MB). Input: `(B, 263, 1, T)` HumanML3D motion features. Conditioning: frozen CLIP ViT-B/32 text embeddings. Prediction target: `x_0` directly (`predict_xstart=True`), not noise.
 
-- **Input format**: `(B, 263, 1, T)` — HumanML3D motion features (root velocity/height + 21×3 joint positions + 21×6 joint rotations + 22×3 local velocities + 4 foot contacts)
-- **Conditioning**: CLIP ViT-B/32 text embeddings (frozen, lives inside the official MDM module)
-- **Prediction target**: `predict_xstart=True` — model predicts the clean `x_0`, **not** the noise
-- **Trainable params**: ~524 K LoRA params (≈2.8% of the 18.5 M base)
-- **SMPL patch**: SMPL body model init is dummied out (only needed for visualisation, not for `hml_vec` features)
+### LoRA Injection
 
-### LoRA Injection Strategy
+MDM uses `nn.MultiheadAttention` with a fused `in_proj_weight` of shape `(3D, D)` — PEFT cannot target this. Solution:
 
-The official MDM uses `nn.MultiheadAttention` with a **fused** `in_proj_weight` of shape `(3D, D)`. PEFT cannot target this. We solve it in two steps:
+1. **`SplitQKVAttention`** copies the fused weights into separate `to_q`, `to_k`, `to_v`, `to_out` linear layers, preserving the forward signature so it works inside `nn.TransformerEncoderLayer` unchanged.
+2. **`replace_attention_layers()`** swaps all `MultiheadAttention` modules in the motion transformer, skipping the CLIP encoder (fp16, would conflict with fp32 LoRA layers).
+3. **`apply_lora()`** injects rank-16 adapters on `[to_q, to_k, to_v, to_out]` across all 8 transformer layers (~524 K trainable params, 2.8% of the 18.5 M base).
 
-1. **`SplitQKVAttention`** — drop-in replacement that copies the fused QKV weights into separate `to_q`, `to_k`, `to_v`, `to_out` `nn.Linear` modules while preserving the `nn.MultiheadAttention` forward signature (so it works inside `nn.TransformerEncoderLayer` unchanged).
-2. **`replace_attention_layers()`** walks all submodules and swaps `MultiheadAttention -> SplitQKVAttention`, **skipping the CLIP encoder** (which uses fp16 and would conflict with the fp32 LoRA layers).
-3. **`apply_lora()`** uses `peft.LoraConfig` to inject rank-16 adapters on `[to_q, to_k, to_v, to_out]` of all 8 transformer layers.
+### Training Loss (final config — v12)
 
-### Diffusion
+```
+L = MSE(pred_x0, x0)
+  + λ_foot * Σ_{j∈feet,ankles} ||v_j^pred ⊙ c_j^gt||²
+  + λ_root * ||v_root_xz^pred ⊙ m_dual||²
+```
 
-- Cosine β-schedule with 1000 timesteps
-- Training loss: `MSE(pred_x0, x_0)` masked by valid frames (NOT the standard `MSE(pred_noise, noise)`)
-- Inference: DDIM (50 steps) — sampler derives noise from the predicted `x_0` and steps backward
+- `λ_foot = 2.0` — penalises predicted foot velocity when ground-truth contact is active
+- `λ_root = 1.0` — penalises root drift when both feet are grounded
+- `α = 8`, `rank = 16` (scaling 0.5), `lr = 1e-4`, 5000 steps, batch 64
 
-## Setup (Training Machine)
+---
 
-The pipeline assumes a Linux machine with all storage on `/transfer/` (no home quota).
+## Setup
+
+Requires Linux, Python 3.11, CUDA 12.1, NVIDIA GPU. All large files live on `/transfer/` (no home quota).
 
 ```bash
-# 1. Clone this repo
-git clone https://github.com/YunaGuo0909/FinetuningLoRA.git
-cd FinetuningLoRA
-
-# 2. Clone the official MDM repo (used by mdm_official.py)
+# 1. Clone this repo and the official MDM
+git clone https://github.com/YunaGuo0909/FinetuningLoRA.git && cd FinetuningLoRA
 git clone https://github.com/GuyTevet/motion-diffusion-model.git /transfer/mdm_official
 
-# 3. Create venv on /transfer (avoids home disk quota)
+# 2. Create venv on /transfer
 uv venv /transfer/lora_venv --python 3.11
 ln -s /transfer/lora_venv .venv
 source .venv/bin/activate
 export UV_CACHE_DIR=/transfer/uv_cache
-export HF_HOME=/transfer/hf_cache          # CLIP cache
-export TRANSFORMERS_CACHE=/transfer/hf_cache
+export HF_HOME=/transfer/hf_cache
 uv pip install -r requirements.txt
 uv pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
 
-# 4. Download datasets and pretrained weights
-python scripts/prepare_data.py
+# 3. Download datasets and weights
 python scripts/prepare_data.py --verify
 ```
 
-Expected `/transfer` layout after setup:
+Expected `/transfer` layout:
 
 ```
 /transfer/
-├── lora_venv/                              -> .venv (symlinked)
-├── mdm_official/                           # cloned official MDM repo
+├── mdm_official/                           # official MDM repo
 ├── loradataset/
-│   ├── humanml3d/                          # 17,126 motions + Mean.npy/Std.npy (from Kaggle)
-│   ├── 100STYLE/                           # 810 BVH files, 100 styles (from Zenodo)
-│   ├── style_bvh/                          # output of reconvert_and_check.py
-│   │   ├── zombie/{motions/, metadata.jsonl}
-│   │   ├── elated/...   old/...   depressed/...   drunk/...
-│   │   └── mixed/                          # all 5 styles merged
-│   └── style_filtered/                     # (failed v6 experiment, unused)
+│   ├── humanml3d/                          # HumanML3D (17,126 motions + Mean.npy/Std.npy)
+│   ├── 100STYLE/                           # 810 BVH files (Zenodo)
+│   └── style_bvh/                          # output of reconvert_and_check.py
+│       ├── zombie/  elated/  old/  depressed/  drunk/
+│       ├── angry/   chicken/ proud/ heavyset/  bigsteps/
+│       ├── stiff/   duckfoot/ highknees/ flapping/ punch/
+│       ├── wildarms/ handsinpockets/ handsbetweenlegs/
+│       ├── onphoneleft/ penguin/ robot/
+│       └── mixed/
 ├── lorapretrain/
-│   └── humanml_trans_enc_512/humanml_trans_enc_512/model000475000.pt
-├── loraoutputs/
-│   ├── models/lora_bvh_<style>/{checkpoint-*,final}
-│   └── eval/multi_style/{*.npy, viz/*.gif, evaluation_results.json}
-├── uv_cache/
-└── hf_cache/                               # CLIP weights
+│   └── humanml_trans_enc_512/model000475000.pt
+└── loraoutputs/
+    ├── models/lora_bvh_<style>_v3/         # trained LoRA checkpoints
+    └── eval/multi_style_v6/                # generated motions + GIFs + metrics
 ```
+
+---
 
 ## Usage
 
-### Step 1 — Convert 100STYLE BVH to per-style HumanML3D features
-
-`reconvert_and_check.py` uses the **fixed** BVH converter (real 6D rotations, not identity placeholders) and writes per-style directories so each style can be trained as a separate LoRA.
+### 1 — Convert 100STYLE BVH to HumanML3D features
 
 ```bash
 python scripts/reconvert_and_check.py
-# Output: /transfer/loradataset/style_bvh/{zombie,elated,old,depressed,drunk,mixed}/
+# Output: /transfer/loradataset/style_bvh/<style>/
 ```
 
-The script also prints per-feature-group normalisation ranges to confirm BVH-converted data is now compatible with HumanML3D's pretrained feature space (rotation features used to span `[-489, 489]`; now `[-5.1, 5.1]` after the fix).
+Uses real 6D rotations extracted from BVH Euler angles (not identity placeholders). Prints per-feature-group normalisation ranges to confirm compatibility with HumanML3D's feature space.
 
-### Step 2 — Train one LoRA per style
+### 2 — Train LoRA adapters
 
 ```bash
-# Train all 6 LoRAs (zombie, elated, old, depressed, drunk, mixed)
-bash run_train.sh
+# Train all 21 styles (final config: alpha=8, foot+root penalty, lr=1e-4)
+bash scripts/train_v3_low_alpha.sh
 
-# Or train specific styles
-bash run_train.sh zombie depressed
-
-# Or call directly
+# Or train a single style directly
 python src/training/train_mdm_lora.py \
     --style_data_dir /transfer/loradataset/style_bvh/zombie \
-    --output_dir    /transfer/loraoutputs/models/lora_bvh_zombie \
+    --output_dir     /transfer/loraoutputs/models/lora_bvh_zombie_v3 \
     --max_train_steps 5000 \
-    --learning_rate 2e-4 \
-    --lora_rank 16
+    --learning_rate 1e-4 \
+    --lora_rank 16 \
+    --lora_alpha 8 \
+    --foot_vel_weight 2.0 \
+    --root_stable_weight 1.0
 ```
 
-Each run takes ~10 min on an RTX 4080 (8 motions × 5000 steps). The `mixed` run takes ~17 min (40 motions).
+Each style takes ~10 min on an RTX 4080.
 
-### Step 3 — Generate, evaluate, visualise (all LoRAs at once)
+### 3 — Generate, evaluate, visualise
 
 ```bash
-python scripts/generate_and_eval.py
-# Output: /transfer/loraoutputs/eval/multi_style/
-#   base_motions.npy
-#   lora_<style>_motions.npy
+LORA_VERSION=v3 python scripts/generate_and_eval.py
+# Output: /transfer/loraoutputs/eval/multi_style_v6/
 #   evaluation_results.json
-#   viz/{<idx>_base_*.gif, <idx>_lora_<style>_*.gif, <idx>_cmp_<style>_*.gif}
+#   viz/<idx>_cmp_<style>_<prompt>.gif
 ```
 
-The script generates with **generic prompts** (e.g. *"a person walking forward"*) — this is intentional. The point of LoRA is to make the model *default to a style* even without explicit style words in the prompt. Comparing base vs LoRA on the same generic prompt reveals what the adapter has actually learned.
+Generates with **generic prompts** (e.g. *"a person walking forward"*, *"a person stepping sideways"*). The LoRA should change the style regardless of what the prompt says.
 
-### Diagnostics
+---
 
-```bash
-python scripts/diagnose_data.py    # check feature ranges, NaN/Inf
-python scripts/diagnose_lora.py    # verify LoRA weights load and produce different outputs
-```
+## Styles Trained (21)
+
+| Strong effect | Moderate effect | Weak/inconsistent |
+|---|---|---|
+| BigSteps, Chicken, Drunk, Old | WildArms, HandsInPockets | Heavyset, HighKnees, Stiff |
+| Angry, DuckFoot, Elated, Zombie | OnPhoneLeft, Proud, Robot | Flapping, Punch, Penguin |
+| Depressed | | HandsBetweenLegs |
+
+---
 
 ## Evaluation Metrics
 
-| Metric | Description | Direction |
-|--------|-------------|-----------|
-| FID | Frechet Inception Distance on motion stat features (mean/std/min/max per dim) | Lower is better |
-| Diversity | Average pairwise L2 distance of generated motions | Higher is better |
-| Jitter | Mean acceleration magnitude on joint positions (smoothness) | Lower is better |
+| Metric | Description |
+|--------|-------------|
+| **Diversity** | Average pairwise L2 distance between generated sequences. Higher = more varied output. |
+| **Jitter** | Mean joint acceleration magnitude across all frames. Lower = smoother motion. |
 
-`MotionEvaluator.compare_base_vs_lora()` runs both base and LoRA generations under the same seed and reports the delta.
+Neither metric captures style fidelity directly. High diversity may reflect erratic generation rather than rich stylistic variation. Results are compared against the base model baseline.
 
-## Datasets
-
-- **HumanML3D** (Guo et al., 2022) — 17,126 motions with 44,970 captions, 263-dim features. Used as the base model's pretraining data and as a normalisation reference for fine-tuning. Downloaded from Kaggle (`mrriandmstique/humanml3d`, ~5.8 GB) because the official repo doesn't redistribute due to AMASS licensing.
-- **100STYLE** (Mason et al., 2022) — 100 locomotion styles, 810 BVH files, ~4 M frames. Used as the **external style data** that LoRA actually learns from. Downloaded directly from Zenodo (`https://zenodo.org/records/8127870`).
-
-We focus on 5 visually distinct styles: **Zombie, Elated, Old, Depressed, Drunk** (8 motions each), plus **Mixed** (all 40).
+---
 
 ## Key Engineering Lessons
 
-The path from "code compiles" to "LoRA visibly changes output" took 7 versions. Documented in `process0504.md`:
+The path from "code runs" to "LoRA visibly changes output" went through 12 training versions. Core lessons:
 
-1. **NaN loss (v1)** — BVH-converted data normalised with HumanML3D's mean/std produced values 50× too large. Fix: clip to `[-5, 5]`.
-2. **No effect at inference (v2)** — using self-computed mean/std meant LoRA learned in one space while diffusion ran in another. Fix: always normalise with HumanML3D stats so LoRA shares the base model's input space.
-3. **Garbled output from custom MDM** — subtle architectural mismatches (post-norm vs pre-norm, conditioning token layout) made pretrained weights useless. Fix: switch to official MDM with attention-layer surgery.
-4. **Identity rotation placeholders** — the original BVH converter filled the 126 rotation dimensions with `[1,0,0,1,0,0]` constants, making 50% of dims totally unlike HumanML3D. Fix: extract real local rotation matrices from BVH and convert via `rotation_matrix_to_6d()`.
-5. **HumanML3D-filtered data teaches LoRA nothing (v6)** — that data is a subset of the base model's pretraining, so there's no new signal. LoRA needs **external** data (100STYLE BVH).
-6. **Mixing 5 styles dilutes the signal (v5)** — train one LoRA per style; use a `mixed` LoRA only as an ablation baseline.
-7. **`x_0` vs noise prediction** — official MDM uses `predict_xstart=True`. Both training loss and DDIM sampler had to be rewritten to predict `x_0` directly.
+1. **NaN loss** — BVH data normalised with HumanML3D stats was 50× out of range. Fix: clip to `[-5, 5]`.
+2. **No inference effect** — training in self-computed normalisation space but running inference in HumanML3D space. Fix: always use HumanML3D mean/std.
+3. **Garbled output from custom MDM** — subtle architectural mismatches made pretrained weights useless. Fix: use official MDM with attention-layer surgery.
+4. **Identity rotation placeholders** — 126 of 263 dims were constants. Fix: extract real rotation matrices from BVH and convert to 6D representation.
+5. **HumanML3D-filtered data teaches nothing** — it is a subset of the base model's pretraining. LoRA needs external data (100STYLE).
+6. **Mixing styles dilutes the signal** — train one LoRA per style.
+7. **`x_0` vs noise prediction** — MDM uses `predict_xstart=True`. Training loss and DDIM sampler both had to target `x_0`, not noise.
+8. **Skeleton shrinking** — `alpha/rank = 1.0` was too aggressive. Lowering to `alpha=8` (scaling 0.5) reduced the artefact.
+9. **Foot sliding** — post-processing fixes broke root-relative coordinates. Training-level foot velocity and root stability penalties were more effective.
 
-## Key Dependencies
+---
 
-- PyTorch 2.4.0 + CUDA 12.1 (newer torch needs newer CUDA driver than the lab machine has)
-- `diffusers`, `accelerate`, `peft` (Hugging Face LoRA stack)
-- `open-clip-torch` (text conditioning, used inside official MDM)
+## Dependencies
+
+- Python 3.11, PyTorch 2.4.0 + CUDA 12.1
+- `peft`, `accelerate` (HuggingFace LoRA stack)
+- `open-clip-torch` (text conditioning inside official MDM)
 - `matplotlib` (skeleton visualisation)
 
 ## Acknowledgements
 
-- [Motion Diffusion Model (MDM)](https://github.com/GuyTevet/motion-diffusion-model) — Tevet et al., 2023
+- [Motion Diffusion Model](https://github.com/GuyTevet/motion-diffusion-model) — Tevet et al., 2023
 - [HumanML3D](https://github.com/EricGuo5513/HumanML3D) — Guo et al., 2022
 - [100STYLE](https://www.ianmaurice.com/100style/) — Mason et al., 2022
-- [PEFT](https://github.com/huggingface/peft) — Hugging Face LoRA implementation
+- [PEFT](https://github.com/huggingface/peft) — HuggingFace
 
-## Coursework
-
-Bournemouth University Level 7 — *Generative AI for Media* (Hammadi Nait-Charif). Deadline 2026-05-15. See [`Brief.txt`](Brief.txt) for the full assignment.
